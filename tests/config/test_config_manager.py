@@ -19,6 +19,7 @@ from amane.config import (
     MediaServerConfig,
     ScrapingConfig,
     SiteConfig,
+    WatcherConfig,
     WatermarkConfig,
     WorkerConfig,
 )
@@ -751,3 +752,17 @@ class TestBskBackendAvailability:
 
         with pytest.raises(ValidationError, match="未找到 bsk CLI"):
             BrowserConfig(bsk_path=str(tmp_path / "absent"), backend=BrowserBackendName.BSK)
+
+
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [
+        # 设置界面按「逗号分隔」收值, 漏掉前导点是最常见的写法
+        (["rmvb"], [".rmvb"]),
+        ([".MP4", "MKV"], [".mp4", ".mkv"]),
+        ([" .avi ", ".avi"], [".avi"]),
+        ([], []),
+    ],
+)
+def test_watcher_media_extensions_normalized(given: list[str], expected: list[str]) -> None:
+    assert WatcherConfig(media_extensions=given).media_extensions == expected

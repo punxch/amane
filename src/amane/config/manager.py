@@ -643,6 +643,25 @@ class WatcherConfig(BaseModel):
         default_factory=lambda: [".mp4", ".mkv", ".avi", ".wmv", ".flv", ".mov", ".ts", ".iso", ".strm"]
     )
 
+    @field_validator("media_extensions")
+    @classmethod
+    def _normalize_media_extensions(cls, value: list[str]) -> list[str]:
+        """归一为带前导点的小写形式.
+
+        设置界面按「逗号分隔」收值, 漏写前导点是最常见的输入; 匹配侧一律按 ``suffix`` 比对,
+        不归一则该项永不命中且没有任何提示. 空项丢弃, 重复项只留一个.
+        """
+        normalized: list[str] = []
+        for raw in value:
+            ext = raw.strip().lower()
+            if not ext:
+                continue
+            if not ext.startswith("."):
+                ext = f".{ext}"
+            if ext not in normalized:
+                normalized.append(ext)
+        return normalized
+
 
 class LoggingConfig(BaseModel):
     level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(default="INFO")
