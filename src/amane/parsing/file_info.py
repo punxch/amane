@@ -213,6 +213,10 @@ _ESCAPE_MARKERS = (
     "PRT",
 )
 
+#: 分辨率连写 (1920x1080). 未列入 _ESCAPE_MARKERS 时, 其数字段会被番号规则当成番号
+#: (CHN025_1280x720 → 025_1280). 两侧各 3~4 位数字才可能是分辨率, 六位数字号不会被吃掉.
+_RESOLUTION_PAIR = r"[0-9]{3,4}X[0-9]{3,4}"
+
 _ROOT_PARTS = frozenset({"/", ".", ""})
 _CD_DIR = re.compile(r"^(?:CD|PART)(\d{1,2})$", re.IGNORECASE)
 _DIR_BRACKET_STRIP = "[]【】()（）"
@@ -475,6 +479,8 @@ def _remove_escape_strings(filename: str, escape_strings: list[str]) -> str:
             upper = upper.replace(string.upper(), "")
     for marker in _ESCAPE_MARKERS:
         upper = re.sub(rf"[-_ .\[]{marker}[-_ .\]]", "-", upper)
+    # 连写分辨率与标记同属画质描述, 一并剥除; 吞掉一侧分隔符避免留下 _- 这类混合分隔.
+    upper = re.sub(rf"(?:^|[-_ .\[]){_RESOLUTION_PAIR}[-_ .\]]?", "-", upper)
     return upper.replace("--", "-").strip("-_ .")
 
 

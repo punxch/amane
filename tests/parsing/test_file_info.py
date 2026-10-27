@@ -368,6 +368,11 @@ CASES: list[object] = [
         number="MIDV-123",
         content_type=ContentType.CENSORED,
     ),
+    # 分辨率连写: 数字段不得被番号规则吃掉 (CHN025_1280x720 → 025_1280)
+    _Case("CHN025_1280x720_H.265.mp4", number="CHN-025"),
+    _Case("ABC123_720x480.mp4", number="ABC-123"),
+    _Case("CHN-025_1920x1080.mp4", number="CHN-025"),
+    _Case("MIDV-123-1440x1080-CD1.mp4", cd=1, number="MIDV-123"),
 ]
 
 
