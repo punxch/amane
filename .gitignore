@@ -209,3 +209,6 @@ androidapp/*.keystore
 
 # parley discussion workspaces created by tooling — never track
 .parley/
+
+# local issue tracker workspaces created by agent skills — never track
+.scratch/
