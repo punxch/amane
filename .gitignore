@@ -212,3 +212,7 @@ androidapp/*.keystore
 
 # local issue tracker workspaces created by agent skills — never track
 .scratch/
+
+# code graph index and agent working records created by tooling — never track
+.codegraph/
+.workbuddy/
