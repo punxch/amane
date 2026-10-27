@@ -14,6 +14,10 @@
 
 技术栈: FastAPI · React + Mantine · SQLite (SQLModel + Alembic) · Docker · PyInstaller + 原生桌面 APP (swift / .NET AOT) · Android 壳 (Kotlin WebView)
 
+### Rust 实现 (amane-rs)
+
+`amane-rs/` 是同一产品的 Rust 实现, 逐步替代 `src/amane/`. 在其内工作先读 [`amane-rs/AGENTS.md`](amane-rs/AGENTS.md), 技术栈与命令与本文件不同: `just rs <recipe>` 是它的任务入口. 两套实现互不导入, 也不共享数据库与数据目录.
+
 ## Issue 与 Pull Request
 
 外部贡献必须遵守 [`AI_POLICY.md`](AI_POLICY.md). PR 须经人工 review, 并按该政策披露 AI 使用程度.
