@@ -12,6 +12,7 @@ const notice = ref<{ kind: "error" | "ok"; text: string } | null>(null);
 const form = reactive({ number: "", title: "" });
 const probeText = ref("");
 const probeResult = ref<ExtractedNumber | null>(null);
+const detail = ref<MetadataDto | null>(null);
 
 function report(kind: "error" | "ok", text: string): void {
   notice.value = { kind, text };
@@ -31,6 +32,14 @@ async function refresh(): Promise<void> {
     report("error", describe(error));
   } finally {
     loading.value = false;
+  }
+}
+
+async function inspect(item: MetadataDto): Promise<void> {
+  try {
+    detail.value = await api.metadata(item.number);
+  } catch (error) {
+    report("error", describe(error));
   }
 }
 
@@ -109,7 +118,8 @@ onMounted(refresh);
             <tr
               v-for="item in items"
               :key="item.id"
-              class="border-b border-neutral-900 last:border-0 hover:bg-neutral-900/40"
+              class="cursor-pointer border-b border-neutral-900 last:border-0 hover:bg-neutral-900/40"
+              @click="inspect(item)"
             >
               <td class="px-4 py-2 font-mono text-neutral-200">{{ item.number }}</td>
               <td class="px-4 py-2 text-neutral-400">{{ item.title ?? "—" }}</td>
@@ -128,6 +138,57 @@ onMounted(refresh);
       </section>
 
       <aside class="flex flex-col gap-4">
+        <section
+          v-if="detail"
+          class="rounded-lg border border-neutral-800/80 p-4"
+        >
+          <div class="flex items-start justify-between gap-2">
+            <h2 class="font-mono text-sm text-neutral-200">{{ detail.number }}</h2>
+            <button
+              class="text-xs text-neutral-600 hover:text-neutral-400"
+              @click="detail = null"
+            >
+              关闭
+            </button>
+          </div>
+          <p class="mt-2 text-sm leading-snug text-neutral-300">{{ detail.title ?? "无标题" }}</p>
+          <dl class="mt-3 space-y-1 text-xs">
+            <div class="flex justify-between gap-3">
+              <dt class="text-neutral-600">上映日期</dt>
+              <dd class="text-neutral-300">{{ detail.release_date ?? "—" }}</dd>
+            </div>
+            <div class="flex justify-between gap-3">
+              <dt class="text-neutral-600">时长</dt>
+              <dd class="text-neutral-300">
+                {{ detail.runtime_minutes === null ? "—" : `${detail.runtime_minutes} 分钟` }}
+              </dd>
+            </div>
+            <div class="flex justify-between gap-3">
+              <dt class="text-neutral-600">制作商</dt>
+              <dd class="text-right text-neutral-300">{{ detail.maker ?? "—" }}</dd>
+            </div>
+            <div class="flex justify-between gap-3">
+              <dt class="text-neutral-600">厂牌</dt>
+              <dd class="text-right text-neutral-300">{{ detail.label ?? "—" }}</dd>
+            </div>
+            <div class="flex justify-between gap-3">
+              <dt class="shrink-0 text-neutral-600">演员</dt>
+              <dd class="text-right text-neutral-300">
+                {{ detail.actors.length === 0 ? "—" : detail.actors.join("、") }}
+              </dd>
+            </div>
+          </dl>
+          <p
+            v-if="detail.plot"
+            class="mt-3 max-h-40 overflow-y-auto border-t border-neutral-800/60 pt-2 text-xs leading-relaxed text-neutral-500"
+          >
+            {{ detail.plot }}
+          </p>
+          <p v-if="detail.poster_url" class="mt-2 truncate font-mono text-xs text-neutral-600">
+            {{ detail.poster_url }}
+          </p>
+        </section>
+
         <form
           class="rounded-lg border border-neutral-800/80 p-4"
           @submit.prevent="submit"

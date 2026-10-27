@@ -109,6 +109,27 @@ impl WebClient {
     }
 
     pub async fn get(&self, url: &str) -> Result<wreq::Response, NetError> {
+        self.execute(url, None).await
+    }
+
+    /// 以 JSON 请求体发送并解析 JSON 响应.
+    pub async fn post_json(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, NetError> {
+        let response = self.execute(url, Some(body)).await?;
+        response
+            .json::<serde_json::Value>()
+            .await
+            .map_err(|error| request_error(url, &error))
+    }
+
+    async fn execute(
+        &self,
+        url: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<wreq::Response, NetError> {
         let host = host_of(url)?;
         let mut attempts = 0;
 
@@ -118,14 +139,14 @@ impl WebClient {
                 let guard = self.inner.read().await;
                 Arc::clone(&guard)
             };
-            let response = client
-                .get(url)
+            let request = match body {
+                Some(body) => client.post(url).json(body),
+                None => client.get(url),
+            };
+            let response = request
                 .send()
                 .await
-                .map_err(|error| NetError::Request {
-                    url: url.to_owned(),
-                    message: error.to_string(),
-                })?;
+                .map_err(|error| request_error(url, &error))?;
 
             let status = response.status().as_u16();
             if !REJECTED.contains(&status) {

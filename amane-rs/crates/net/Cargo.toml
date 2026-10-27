@@ -6,11 +6,12 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["time", "sync"] }
 tracing.workspace = true
 url = "2"
-wreq = "0.16"
+wreq = { version = "0.16", features = ["json"] }
 wreq-util = "0.2"
 
 [dev-dependencies]

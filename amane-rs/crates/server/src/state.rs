@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use amane_core::config::Settings;
 use amane_core::{
@@ -6,6 +7,7 @@ use amane_core::{
     TaskService,
 };
 use amane_crawlers::Registry;
+use amane_net::{Rate, RateLimiters, WebClient};
 use amane_runtime::ScrapeHandler;
 
 /// 启动失败的原因.
@@ -17,6 +19,8 @@ pub enum BootError {
     Database(#[from] DbError),
     #[error(transparent)]
     Task(#[from] TaskRepositoryError),
+    #[error("构造 HTTP 客户端失败: {0}")]
+    Network(String),
 }
 
 /// 一个进程内运行时的全部依赖.
@@ -42,7 +46,16 @@ impl Runtime {
             tracing::warn!(count = recovered, "上次进程遗留的任务已放回队列");
         }
 
-        let sources = Arc::new(Registry::builtin());
+        // 限速器先于客户端构造: 客户端持有分桶状态, 反过来无法通过编译.
+        let limiters = RateLimiters::new(Rate::per_second(2, 1.0))
+            .with_override(amane_crawlers::dmm::HOST, Rate::per_second(2, 2.0));
+        let client = WebClient::new(
+            Duration::from_secs(u64::from(settings.hot.request_timeout_secs)),
+            limiters,
+        )
+        .map_err(|error| BootError::Network(error.to_string()))?;
+
+        let sources = Arc::new(Registry::builtin(Arc::new(client)));
         let handlers: Vec<Arc<dyn TaskHandler>> =
             vec![ScrapeHandler::new(Arc::clone(&sources), metadata.clone())];
         let tasks = TaskService::new(

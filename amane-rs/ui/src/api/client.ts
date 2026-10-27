@@ -61,6 +61,9 @@ export const api = {
   list: (limit = 50, offset = 0): Promise<MetadataPage> =>
     request(`/api/metadata?limit=${limit}&offset=${offset}`),
 
+  metadata: (number: string): Promise<MetadataDto> =>
+    request(`/api/metadata/${encodeURIComponent(number)}`),
+
   create: (payload: CreateMetadataRequest): Promise<MetadataDto> =>
     request("/api/metadata", {
       method: "POST",

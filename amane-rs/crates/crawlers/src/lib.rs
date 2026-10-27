@@ -3,7 +3,14 @@
 //! 来源全部编译进二进制, 不加载外部插件. 新增站点只需实现 [`Source`] 并登记到 [`Registry`],
 //! 宿主与前端不感知具体站点.
 
+pub mod dmm;
+
+pub use dmm::DmmSource;
+
+use std::sync::Arc;
+
 use amane_core::MediaNumber;
+use amane_net::WebClient;
 use async_trait::async_trait;
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
@@ -36,7 +43,7 @@ pub struct ScrapedMetadata {
     pub title: Option<String>,
     pub plot: Option<String>,
     pub release_date: Option<NaiveDate>,
-    pub runtime_minutes: Option<u32>,
+    pub runtime_minutes: Option<i32>,
     pub studio: Option<String>,
     pub label: Option<String>,
     pub series: Option<String>,
@@ -76,8 +83,8 @@ impl Registry {
     }
 
     /// 内置来源. 站点实现在各自的切片中登记, 这里保持唯一的装配点.
-    pub fn builtin() -> Self {
-        Self::new(Vec::new())
+    pub fn builtin(client: Arc<WebClient>) -> Self {
+        Self::new(vec![Box::new(DmmSource::new(client))])
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &dyn Source> {
@@ -157,9 +164,20 @@ mod tests {
     }
 
     #[test]
-    fn builtin_starts_empty() {
-        let registry = Registry::builtin();
+    fn builtin_registers_every_site() {
+        let client = std::sync::Arc::new(
+            amane_net::WebClient::new(
+                std::time::Duration::from_secs(5),
+                amane_net::RateLimiters::new(amane_net::Rate::per_second(1, 1.0)),
+            )
+            .expect("客户端应构造成功"),
+        );
+        let registry = Registry::builtin(client);
 
-        assert!(registry.is_empty(), "站点实现登记之前不应有来源");
+        let ids: Vec<&str> = registry
+            .iter()
+            .map(|source| source.descriptor().id)
+            .collect();
+        assert_eq!(ids, ["dmm"]);
     }
 }

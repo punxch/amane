@@ -11,6 +11,17 @@ pub struct MetadataDto {
     pub id: i64,
     pub number: String,
     pub title: Option<String>,
+    pub plot: Option<String>,
+    /// 上映日期, 形如 `2021-02-18`.
+    pub release_date: Option<String>,
+    /// 时长, 单位分钟.
+    pub runtime_minutes: Option<i32>,
+    pub maker: Option<String>,
+    pub label: Option<String>,
+    pub series: Option<String>,
+    pub poster_url: Option<String>,
+    /// 演员名单; 列表端点不返回, 只有详情端点填充.
+    pub actors: Vec<String>,
     /// 条目类型, 取值见 `ContentType`.
     pub content_type: String,
     pub created_at: DateTime<Utc>,
@@ -23,6 +34,14 @@ impl From<Metadata> for MetadataDto {
             id: value.id,
             number: value.number,
             title: value.title,
+            plot: value.plot,
+            release_date: value.release_date.map(|date| date.to_string()),
+            runtime_minutes: value.runtime_minutes,
+            maker: value.maker,
+            label: value.label,
+            series: value.series,
+            poster_url: value.poster_url,
+            actors: Vec::new(),
             content_type: value.content_type.as_str().to_owned(),
             created_at: value.created_at,
             updated_at: value.updated_at,

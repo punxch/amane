@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use amane_core::{
-    MediaNumber, MetadataRepository, TaskContext, TaskError, TaskHandler, TaskKind, TaskOutcome,
+    MediaNumber, MetadataInput, MetadataRepository, TaskContext, TaskError, TaskHandler, TaskKind,
+    TaskOutcome,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -45,7 +46,7 @@ impl TaskHandler for ScrapeHandler {
         context.logger.info(format!("开始刮削 {number}")).await;
 
         let mut hits = 0;
-        let mut title = None;
+        let mut first_hit: Option<amane_crawlers::ScrapedMetadata> = None;
         for source in self.sources.with_capability(Capability::Metadata) {
             if context.cancel.is_cancelled() {
                 return Err(TaskError::Cancelled);
@@ -63,8 +64,8 @@ impl TaskHandler for ScrapeHandler {
                             scraped.title.as_deref().unwrap_or("无标题")
                         ))
                         .await;
-                    if title.is_none() {
-                        title = scraped.title;
+                    if first_hit.is_none() {
+                        first_hit = Some(scraped);
                     }
                 }
                 Err(error) => {
@@ -81,9 +82,25 @@ impl TaskHandler for ScrapeHandler {
             return Err(TaskError::Failed("没有来源返回结果".to_owned()));
         }
 
+        let Some(scraped) = first_hit else {
+            return Err(TaskError::Failed("没有可写入的结果".to_owned()));
+        };
+
+        let input = MetadataInput {
+            title: scraped.title.as_deref(),
+            plot: scraped.plot.as_deref(),
+            release_date: scraped.release_date,
+            runtime_minutes: scraped.runtime_minutes,
+            maker: scraped.studio.as_deref(),
+            label: scraped.label.as_deref(),
+            series: scraped.series.as_deref(),
+            poster_url: scraped.poster_url.as_deref(),
+            actors: Some(&scraped.actors),
+        };
+
         let row = self
             .metadata
-            .upsert(&number, title.as_deref())
+            .upsert(&number, &input)
             .await
             .map_err(|error| TaskError::Failed(format!("写入番号条目失败: {error}")))?;
         context

@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use thiserror::Error;
@@ -13,9 +13,34 @@ pub struct Metadata {
     pub id: i64,
     pub number: String,
     pub title: Option<String>,
+    pub plot: Option<String>,
+    pub release_date: Option<NaiveDate>,
+    pub runtime_minutes: Option<i32>,
+    pub maker: Option<String>,
+    pub label: Option<String>,
+    pub series: Option<String>,
+    pub poster_url: Option<String>,
     pub content_type: ContentType,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// 写入条目的字段集合.
+///
+/// 与 [`Metadata`] 分开: 写入时没有标识与时间戳。字段为 `None` 表示本次没有该值,
+/// 是否覆盖既有值由各字段自己的规则决定。
+#[derive(Debug, Clone, Default)]
+pub struct MetadataInput<'a> {
+    pub title: Option<&'a str>,
+    pub plot: Option<&'a str>,
+    pub release_date: Option<NaiveDate>,
+    pub runtime_minutes: Option<i32>,
+    pub maker: Option<&'a str>,
+    pub label: Option<&'a str>,
+    pub series: Option<&'a str>,
+    pub poster_url: Option<&'a str>,
+    /// `None` 表示本次不改动演员名单; `Some` 表示整体替换, 空列表即清空.
+    pub actors: Option<&'a [String]>,
 }
 
 #[derive(Debug, Error)]
@@ -24,7 +49,7 @@ pub enum RepositoryError {
     Database(#[from] sqlx::Error),
 }
 
-/// 条目仓储. 写操作走写池, 读操作走读池.
+/// 条目仓储. 写操作经由写池, 读操作走读池.
 #[derive(Debug, Clone)]
 pub struct MetadataRepository {
     database: Database,
@@ -35,31 +60,82 @@ impl MetadataRepository {
         Self { database }
     }
 
-    /// 按番号写入或更新. `title` 为空时保留既有值.
+    /// 按番号写入或更新. 空字段保留既有值, 演员名单整体替换.
     pub async fn upsert(
         &self,
         number: &MediaNumber,
-        title: Option<&str>,
+        input: &MetadataInput<'_>,
     ) -> Result<Metadata, RepositoryError> {
         let now = Utc::now();
+        let mut transaction = self.database.write().begin().await?;
+
         let row = sqlx::query_as::<_, Metadata>(
             r#"
-            INSERT INTO metadata (number, title, content_type, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?4)
+            INSERT INTO metadata (
+                number, title, plot, release_date, runtime_minutes,
+                maker, label, series, poster_url, content_type, created_at, updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
             ON CONFLICT(number) DO UPDATE SET
                 title = COALESCE(excluded.title, metadata.title),
+                plot = COALESCE(excluded.plot, metadata.plot),
+                release_date = COALESCE(excluded.release_date, metadata.release_date),
+                runtime_minutes = COALESCE(excluded.runtime_minutes, metadata.runtime_minutes),
+                maker = COALESCE(excluded.maker, metadata.maker),
+                label = COALESCE(excluded.label, metadata.label),
+                series = COALESCE(excluded.series, metadata.series),
+                poster_url = COALESCE(excluded.poster_url, metadata.poster_url),
                 content_type = excluded.content_type,
                 updated_at = excluded.updated_at
             RETURNING *
             "#,
         )
         .bind(number.as_str())
-        .bind(title)
+        .bind(input.title)
+        .bind(input.plot)
+        .bind(input.release_date)
+        .bind(input.runtime_minutes)
+        .bind(input.maker)
+        .bind(input.label)
+        .bind(input.series)
+        .bind(input.poster_url)
         .bind(number.content_type())
         .bind(now)
-        .fetch_one(self.database.write())
+        .fetch_one(&mut *transaction)
         .await?;
 
+        if let Some(actors) = input.actors {
+            sqlx::query("DELETE FROM metadata_actor WHERE metadata_id = ?1")
+                .bind(row.id)
+                .execute(&mut *transaction)
+                .await?;
+
+            for (index, name) in actors.iter().enumerate() {
+                let actor_id = sqlx::query_scalar::<_, i64>(
+                    r#"
+                    INSERT INTO actor (name, created_at, updated_at)
+                    VALUES (?1, ?2, ?2)
+                    ON CONFLICT(name) DO UPDATE SET updated_at = excluded.updated_at
+                    RETURNING id
+                    "#,
+                )
+                .bind(name)
+                .bind(now)
+                .fetch_one(&mut *transaction)
+                .await?;
+
+                sqlx::query(
+                    "INSERT INTO metadata_actor (metadata_id, actor_id, ordinal) VALUES (?1, ?2, ?3)",
+                )
+                .bind(row.id)
+                .bind(actor_id)
+                .bind(i64::try_from(index).unwrap_or(i64::MAX))
+                .execute(&mut *transaction)
+                .await?;
+            }
+        }
+
+        transaction.commit().await?;
         Ok(row)
     }
 
@@ -70,6 +146,23 @@ impl MetadataRepository {
             .await?;
 
         Ok(row)
+    }
+
+    /// 条目的演员名单, 按写入时的顺序.
+    pub async fn actors(&self, metadata_id: i64) -> Result<Vec<String>, RepositoryError> {
+        let names = sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT actor.name FROM metadata_actor
+            JOIN actor ON actor.id = metadata_actor.actor_id
+            WHERE metadata_actor.metadata_id = ?1
+            ORDER BY metadata_actor.ordinal ASC
+            "#,
+        )
+        .bind(metadata_id)
+        .fetch_all(self.database.read())
+        .await?;
+
+        Ok(names)
     }
 
     pub async fn list(&self, limit: u32, offset: u32) -> Result<Vec<Metadata>, RepositoryError> {
@@ -95,7 +188,7 @@ impl MetadataRepository {
 
 #[cfg(test)]
 mod tests {
-    use super::MetadataRepository;
+    use super::{MetadataInput, MetadataRepository};
     use crate::content_type::ContentType;
     use crate::db::Database;
     use crate::number::MediaNumber;
@@ -108,17 +201,25 @@ mod tests {
         (dir, MetadataRepository::new(database))
     }
 
+    fn input<'a>(title: Option<&'a str>, actors: &'a [String]) -> MetadataInput<'a> {
+        MetadataInput {
+            title,
+            actors: Some(actors),
+            ..MetadataInput::default()
+        }
+    }
+
     #[tokio::test]
     async fn upsert_is_idempotent_on_number() {
         let (_dir, repository) = repository().await;
         let number = MediaNumber::parse("ABC-123").expect("应解析成功");
 
         let first = repository
-            .upsert(&number, Some("初版标题"))
+            .upsert(&number, &input(Some("初版标题"), &[]))
             .await
             .expect("首次写入应成功");
         let second = repository
-            .upsert(&number, None)
+            .upsert(&number, &input(None, &[]))
             .await
             .expect("重复写入应更新而非插入");
 
@@ -133,22 +234,58 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_is_ordered_by_update_time() {
+    async fn upsert_replaces_actor_list() {
         let (_dir, repository) = repository().await;
-        for raw in ["ABC-001", "ABC-002", "ABC-003"] {
-            let number = MediaNumber::parse(raw).expect("应解析成功");
-            repository.upsert(&number, None).await.expect("写入应成功");
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
+        let number = MediaNumber::parse("ABC-123").expect("应解析成功");
+        let first = vec!["葵つかさ".to_owned(), "乙白さやか".to_owned()];
+        let second = vec!["乙白さやか".to_owned()];
 
-        let rows = repository.list(10, 0).await.expect("应列出成功");
-        let numbers: Vec<&str> = rows.iter().map(|row| row.number.as_str()).collect();
+        let row = repository
+            .upsert(&number, &input(Some("标题"), &first))
+            .await
+            .expect("应写入成功");
+        repository
+            .upsert(&number, &input(None, &second))
+            .await
+            .expect("应再次写入成功");
 
-        assert_eq!(numbers, ["ABC-003", "ABC-002", "ABC-001"]);
+        assert_eq!(
+            repository.actors(row.id).await.expect("应查询成功"),
+            vec!["乙白さやか".to_owned()],
+            "演员名单整体替换而不是累加"
+        );
     }
 
     #[tokio::test]
-    async fn find_returns_none_for_absent_number() {
+    async fn absent_actor_list_keeps_existing() {
+        let (_dir, repository) = repository().await;
+        let number = MediaNumber::parse("ABC-123").expect("应解析成功");
+        let actors = vec!["葵つかさ".to_owned()];
+        let row = repository
+            .upsert(&number, &input(Some("标题"), &actors))
+            .await
+            .expect("应写入成功");
+
+        repository
+            .upsert(
+                &number,
+                &MetadataInput {
+                    title: Some("新标题"),
+                    ..MetadataInput::default()
+                },
+            )
+            .await
+            .expect("应再次写入成功");
+
+        assert_eq!(
+            repository.actors(row.id).await.expect("应查询成功"),
+            actors,
+            "未提供演员名单时不应清空既有值"
+        );
+    }
+
+    #[tokio::test]
+    async fn finds_absent_number_as_none() {
         let (_dir, repository) = repository().await;
         let number = MediaNumber::parse("ABC-999").expect("应解析成功");
 
@@ -159,5 +296,23 @@ mod tests {
                 .expect("查询应成功")
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn list_is_ordered_by_update_time() {
+        let (_dir, repository) = repository().await;
+        for raw in ["ABC-001", "ABC-002", "ABC-003"] {
+            let number = MediaNumber::parse(raw).expect("应解析成功");
+            repository
+                .upsert(&number, &input(None, &[]))
+                .await
+                .expect("写入应成功");
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+
+        let rows = repository.list(10, 0).await.expect("应列出成功");
+        let numbers: Vec<&str> = rows.iter().map(|row| row.number.as_str()).collect();
+
+        assert_eq!(numbers, ["ABC-003", "ABC-002", "ABC-001"]);
     }
 }

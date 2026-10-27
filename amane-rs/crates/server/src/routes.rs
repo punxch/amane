@@ -1,6 +1,8 @@
 use amane_core::TaskLogger;
 use amane_core::config::Settings;
-use amane_core::{MediaNumber, TaskFilter, TaskKind, TaskServiceError, TaskSpec, TaskStatus};
+use amane_core::{
+    MediaNumber, MetadataInput, TaskFilter, TaskKind, TaskServiceError, TaskSpec, TaskStatus,
+};
 use axum::Json;
 use axum::Router;
 use axum::extract::{Path, Query, State};
@@ -82,11 +84,11 @@ pub async fn create_metadata(
     Json(payload): Json<CreateMetadataRequest>,
 ) -> Result<(StatusCode, Json<MetadataDto>), ApiError> {
     let number = MediaNumber::parse(&payload.number)?;
-    let row = state
-        .runtime
-        .metadata
-        .upsert(&number, payload.title.as_deref())
-        .await?;
+    let input = MetadataInput {
+        title: payload.title.as_deref(),
+        ..MetadataInput::default()
+    };
+    let row = state.runtime.metadata.upsert(&number, &input).await?;
 
     Ok((StatusCode::CREATED, Json(MetadataDto::from(row))))
 }
@@ -107,16 +109,19 @@ pub async fn get_metadata(
     Path(number): Path<String>,
 ) -> Result<Json<MetadataDto>, ApiError> {
     let number = MediaNumber::parse(&number)?;
-    state
+    let row = state
         .runtime
         .metadata
         .find(&number)
         .await?
-        .map(MetadataDto::from)
-        .map(Json)
         .ok_or_else(|| ApiError::NotFound {
             what: format!("影片 {number} 不存在"),
-        })
+        })?;
+
+    let mut dto = MetadataDto::from(row);
+    dto.actors = state.runtime.metadata.actors(dto.id).await?;
+
+    Ok(Json(dto))
 }
 
 #[utoipa::path(
