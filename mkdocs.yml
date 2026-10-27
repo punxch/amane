@@ -46,6 +46,7 @@ plugins:
 exclude_docs: |
   roadmap.md
   dev/
+  agents/
 
 nav:
   - 首页: index.md

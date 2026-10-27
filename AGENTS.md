@@ -115,3 +115,17 @@ formatter/linter 不通过时优先使用 `just fix` 自动修复, 不要手动�
 - **复用fixture**. 创建 fixture 前先检查是否已有
 - **禁止玩具测试**. 禁止为提高覆盖率而创建无意义的测试, 必须测试实际逻辑. 详见 `docs/dev/testing.md`
 - **必须包含边界/非法用例**. 不能只包含合法输入用例, 必须充分测试非法输入下的健壮性, 以及报错异常信息的明确性
+
+## Agent skills
+
+### Issue tracker
+
+issue 与 spec 以 markdown 文件保存在 `.scratch/`, 不使用 GitHub Issues. 见 `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+triage 的五个状态角色与两个类别角色记录为 issue 文件头部的 `Status:` / `Kind:` 行, 用词沿用既有 `status:*` / `kind:*` 标签. 见 `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+单上下文: 术语表为 `docs/dev/terms.md`, 架构决策位于 `docs/adr/`. 见 `docs/agents/domain.md`.
