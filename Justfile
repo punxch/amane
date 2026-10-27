@@ -205,3 +205,7 @@ strip-commas *args:
 # Replay a scrape task from a task record (dir or zip)
 repro path *args:
     uv run python -m amane.observability {{ path }} {{ args }}
+
+# Rust 实现 (amane-rs) 的任务入口, 用法: just rs <recipe> [args]
+rs *args:
+    just --justfile amane-rs/Justfile --working-directory amane-rs {{ args }}

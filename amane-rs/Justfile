@@ -1,0 +1,56 @@
+# 与根 Justfile 相同的 shell 约定: recipe 行必须同时兼容 sh 与 pwsh.
+[windows]
+set shell := ["pwsh", "-NoProfile", "-Command"]
+
+default:
+    @just --list
+
+# 安装前端依赖
+install:
+    pnpm --dir ui install
+
+# 启动 API (:8787); 前端另开一个终端运行 `just ui`
+dev:
+    cargo run -p amane-server -- --data-dir data
+
+# 启动前端开发服务器, /api 代理到 AMANE_API (默认 :8787)
+[working-directory('ui')]
+ui:
+    pnpm dev
+
+test:
+    cargo test --workspace
+
+# 格式、lint 与后端测试; 不依赖 Node
+check:
+    cargo fmt --all -- --check
+    cargo clippy --workspace --all-targets -- -D warnings
+    cargo test --workspace
+
+# 前端类型检查: 先由服务端契约生成类型, 再校验前端代码
+check-ui: openapi
+    pnpm --dir ui install
+    pnpm --dir ui run generate
+    pnpm --dir ui run typecheck
+
+# CI 门禁: 后端检查 + 前端类型检查
+ci: check check-ui
+
+# 自动修复格式与 lint 可修项
+fix:
+    cargo fmt --all
+    cargo clippy --workspace --all-targets --fix --allow-dirty
+
+# 导出 OpenAPI 文档到 ui/openapi.json
+openapi:
+    cargo run -q -p amane-server -- --print-openapi > ui/openapi.json
+
+# 由 OpenAPI 生成 TS 类型; 生成产物不入库
+generate: openapi
+    pnpm --dir ui install
+    pnpm --dir ui run generate
+
+# 构建服务端与前端产物
+build: generate
+    cargo build --release -p amane-server
+    pnpm --dir ui run build

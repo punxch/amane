@@ -1,0 +1,8 @@
+/target
+/ui/dist
+/ui/node_modules
+/ui/openapi.json
+/ui/src/api/schema.d.ts
+/crates/desktop/gen
+.DS_Store
+/data

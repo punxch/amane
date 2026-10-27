@@ -25,6 +25,9 @@ concurrency:
 env:
   NODE_VERSION: "24"
   PNPM_VERSION: "11"
+  # amane-rs 的前端用 pnpm 12 的 allowBuilds 放行 esbuild 的构建脚本.
+  RS_PNPM_VERSION: "12"
+  RUST_TOOLCHAIN: "1.99"
 
 jobs:
   static:
@@ -83,6 +86,42 @@ jobs:
           path: |
             coverage_html/
             coverage.xml
+
+  rust:
+    name: just rs ci
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: amane-rs
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: ${{ env.RS_PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: amane-rs/ui/pnpm-lock.yaml
+
+      - name: Setup just
+        uses: extractions/setup-just@v4
+
+      # 后端检查不依赖 Node; 前端类型检查要先把服务端契约导出再校验.
+      - name: just rs ci
+        run: just rs ci
 
   windows:
     name: just ci-windows
