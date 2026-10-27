@@ -21,6 +21,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 name = "amane-core"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "regex",
  "schemars",
@@ -30,6 +31,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 
@@ -45,11 +47,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "amane-runtime"
+version = "0.1.0"
+dependencies = [
+ "amane-core",
+ "amane-crawlers",
+ "async-trait",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "amane-server"
 version = "0.1.0"
 dependencies = [
  "amane-core",
  "amane-crawlers",
+ "amane-runtime",
  "axum",
  "chrono",
  "clap",
@@ -57,6 +74,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror",
  "tokio",
  "tower",
  "tower-http",
@@ -1946,6 +1964,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a3d06f0b082ba57c26b79407372e57cf2a1e28124f78e9479fe80322cf53420b"
 dependencies = [
  "futures-core",
+ "pin-project-lite",
+ "tokio",
+]
+
+[[package]]
+name = "tokio-util"
+version = "0.7.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e464cf451ba96ebfc6f9b6542f17ee8b8956e33f1e40d9690624e59d7a7f8a4b"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "futures-sink",
  "pin-project-lite",
  "tokio",
 ]

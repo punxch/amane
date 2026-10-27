@@ -18,6 +18,8 @@ pub struct ErrorBody {
 #[derive(Debug)]
 pub enum ApiError {
     InvalidNumber(NumberError),
+    Invalid { code: &'static str, message: String },
+    Conflict { message: String },
     NotFound { what: String },
     Unauthorized,
     Internal(String),
@@ -29,6 +31,8 @@ impl ApiError {
             Self::InvalidNumber(error) => {
                 (StatusCode::BAD_REQUEST, "invalid_number", error.to_string())
             }
+            Self::Invalid { code, message } => (StatusCode::BAD_REQUEST, code, message.clone()),
+            Self::Conflict { message } => (StatusCode::CONFLICT, "conflict", message.clone()),
             Self::NotFound { what } => (StatusCode::NOT_FOUND, "not_found", what.clone()),
             Self::Unauthorized => (
                 StatusCode::UNAUTHORIZED,
@@ -52,6 +56,23 @@ impl IntoResponse for ApiError {
             message,
         };
         (status, Json(body)).into_response()
+    }
+}
+
+impl From<amane_core::TaskRepositoryError> for ApiError {
+    fn from(error: amane_core::TaskRepositoryError) -> Self {
+        match error {
+            amane_core::TaskRepositoryError::NotFound(id) => Self::NotFound {
+                what: format!("任务 {id} 不存在"),
+            },
+            amane_core::TaskRepositoryError::NotRetryable(id) => Self::Conflict {
+                message: format!("任务 {id} 尚未结束, 不能重试"),
+            },
+            other => {
+                tracing::error!(error = %other, "任务仓储操作失败");
+                Self::Internal("任务仓储操作失败".to_owned())
+            }
+        }
     }
 }
 

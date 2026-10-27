@@ -1,0 +1,18 @@
+[package]
+name = "amane-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+amane-core.workspace = true
+amane-crawlers.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio-util.workspace = true

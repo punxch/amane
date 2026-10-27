@@ -13,6 +13,11 @@ export type MetadataPage = Schemas["MetadataPage"];
 export type ExtractedNumber = Schemas["ExtractedNumber"];
 export type CreateMetadataRequest = Schemas["CreateMetadataRequest"];
 export type ApiErrorBody = Schemas["ErrorBody"];
+export type TaskDto = Schemas["TaskDto"];
+export type TaskPage = Schemas["TaskPage"];
+export type CreateTaskRequest = Schemas["CreateTaskRequest"];
+export type TaskLogEntry = Schemas["TaskLogEntry"];
+export type TaskLogPage = Schemas["TaskLogPage"];
 
 export class ApiError extends Error {
   public readonly code: string;
@@ -64,4 +69,25 @@ export const api = {
 
   extract: (text: string): Promise<ExtractedNumber> =>
     request(`/api/number/extract?text=${encodeURIComponent(text)}`),
+
+  listTasks: (status: string | null, limit = 50, offset = 0): Promise<TaskPage> => {
+    const query = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (status !== null) {
+      query.set("status", status);
+    }
+    return request(`/api/tasks?${query.toString()}`);
+  },
+
+  createTask: (payload: CreateTaskRequest): Promise<TaskDto> =>
+    request("/api/tasks", { method: "POST", body: JSON.stringify(payload) }),
+
+  cancelTask: (id: number): Promise<TaskDto> =>
+    request(`/api/tasks/${id}/cancel`, { method: "POST" }),
+
+  retryTask: (id: number): Promise<TaskDto> =>
+    request(`/api/tasks/${id}/retry`, { method: "POST" }),
+
+  taskLog: (id: number): Promise<TaskLogPage> => request(`/api/tasks/${id}/log`),
+
+  taskChildren: (id: number): Promise<TaskPage> => request(`/api/tasks/${id}/children`),
 };

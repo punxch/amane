@@ -1,4 +1,4 @@
-use amane_core::Metadata;
+use amane_core::{Metadata, Task, TaskLogLine};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -70,4 +70,89 @@ pub struct ExtractedNumber {
     pub number: String,
     pub content_type: String,
     pub prefix: String,
+}
+
+/// 任务的传输形态.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TaskDto {
+    pub id: i64,
+    /// 任务类型, 取值见 `TaskKind`.
+    pub kind: String,
+    /// 任务状态, 取值见 `TaskStatus`.
+    pub status: String,
+    pub payload: serde_json::Value,
+    pub priority: i32,
+    pub attempts: i32,
+    pub error: Option<String>,
+    /// 重试来源任务的标识.
+    pub retry_of: Option<i64>,
+    pub created_at: DateTime<Utc>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub finished_at: Option<DateTime<Utc>>,
+}
+
+impl From<Task> for TaskDto {
+    fn from(value: Task) -> Self {
+        let payload = serde_json::from_str(&value.payload).unwrap_or(serde_json::Value::Null);
+        Self {
+            id: value.id,
+            kind: value.kind.to_string(),
+            status: value.status.as_str().to_owned(),
+            payload,
+            priority: value.priority,
+            attempts: value.attempts,
+            error: value.error,
+            retry_of: value.retry_of,
+            created_at: value.created_at,
+            started_at: value.started_at,
+            finished_at: value.finished_at,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TaskPage {
+    pub total: i64,
+    pub items: Vec<TaskDto>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateTaskRequest {
+    /// 任务类型: scrape / organize / refresh / cleanup. 目前只有 scrape 注册了处理函数.
+    pub kind: String,
+    /// 任务载荷, 结构由类型决定.
+    pub payload: serde_json::Value,
+    #[serde(default)]
+    pub priority: i32,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct TaskListQuery {
+    /// 按状态过滤: queued / running / done / failed / cancelled.
+    pub status: Option<String>,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TaskLogEntry {
+    pub at: DateTime<Utc>,
+    pub level: String,
+    pub message: String,
+}
+
+impl From<TaskLogLine> for TaskLogEntry {
+    fn from(value: TaskLogLine) -> Self {
+        Self {
+            at: value.at,
+            level: value.level,
+            message: value.message,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TaskLogPage {
+    pub items: Vec<TaskLogEntry>,
 }

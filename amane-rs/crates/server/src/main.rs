@@ -53,9 +53,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let address = listener.local_addr()?;
     tracing::info!(%address, "amane-server 已启动");
 
-    axum::serve(listener, build_router(AppState::new(runtime)))
+    let state = AppState::new(runtime);
+    let worker = state.runtime.tasks.start();
+
+    axum::serve(listener, build_router(state.clone()))
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+
+    // 先停止出队循环再退出, 避免停机过程中继续领取任务.
+    state.runtime.tasks.shutdown();
+    let _ = worker.await;
 
     Ok(())
 }

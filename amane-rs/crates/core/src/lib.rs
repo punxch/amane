@@ -8,8 +8,14 @@ pub mod content_type;
 pub mod db;
 pub mod metadata;
 pub mod number;
+pub mod task;
 
 pub use content_type::ContentType;
 pub use db::{Database, DbError};
 pub use metadata::{Metadata, MetadataRepository, RepositoryError};
 pub use number::{MediaNumber, NumberError};
+pub use task::{
+    Task, TaskContext, TaskError, TaskFilter, TaskHandler, TaskKind, TaskLogLine, TaskLogger,
+    TaskOutcome, TaskRepository, TaskRepositoryError, TaskService, TaskServiceError, TaskSpec,
+    TaskStatus,
+};

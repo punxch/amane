@@ -30,6 +30,13 @@ pub use state::{AppState, Runtime};
         routes::get_metadata,
         routes::extract_number,
         routes::config_schema,
+        routes::list_tasks,
+        routes::create_task,
+        routes::get_task,
+        routes::cancel_task,
+        routes::retry_task,
+        routes::task_log,
+        routes::task_children,
     ),
     components(schemas(
         dto::MetadataDto,
@@ -37,6 +44,11 @@ pub use state::{AppState, Runtime};
         dto::CreateMetadataRequest,
         dto::HealthResponse,
         dto::ExtractedNumber,
+        dto::TaskDto,
+        dto::TaskPage,
+        dto::CreateTaskRequest,
+        dto::TaskLogEntry,
+        dto::TaskLogPage,
         error::ErrorBody,
     ))
 )]
@@ -149,19 +161,30 @@ async fn require_token(State(state): State<AppState>, request: Request, next: Ne
 mod tests {
     use amane_core::config::{ColdSettings, HotSettings, Settings};
     use axum::body::{Body, to_bytes};
-    use axum::http::{Request, StatusCode};
+    use axum::http::{Method, Request, StatusCode};
     use tower::ServiceExt;
 
     use super::{AppState, Runtime};
 
     async fn app(api_token: Option<&str>) -> (tempfile::TempDir, axum::Router) {
-        app_with_ui(api_token, None).await
+        let (dir, router, _state) = app_state(api_token).await;
+        (dir, router)
     }
 
-    async fn app_with_ui(
+    async fn app_state(api_token: Option<&str>) -> (tempfile::TempDir, axum::Router, AppState) {
+        let (dir, router, state, _ui) = app_full(api_token, None).await;
+        (dir, router, state)
+    }
+
+    async fn app_full(
         api_token: Option<&str>,
         ui: Option<std::path::PathBuf>,
-    ) -> (tempfile::TempDir, axum::Router) {
+    ) -> (
+        tempfile::TempDir,
+        axum::Router,
+        AppState,
+        Option<std::path::PathBuf>,
+    ) {
         let dir = tempfile::tempdir().expect("应创建临时目录");
         let settings = Settings {
             cold: ColdSettings {
@@ -172,8 +195,9 @@ mod tests {
             hot: HotSettings::default(),
         };
         let runtime = Runtime::boot(settings).await.expect("运行时应启动");
-        let router = super::build_router_with_ui(AppState::new(runtime), ui);
-        (dir, router)
+        let state = AppState::new(runtime);
+        let router = super::build_router_with_ui(state.clone(), ui);
+        (dir, router, state, None)
     }
 
     #[tokio::test]
@@ -263,6 +287,144 @@ mod tests {
         assert_eq!(allowed.status(), StatusCode::OK);
     }
 
+    async fn call(
+        app: axum::Router,
+        method: Method,
+        path: &str,
+        body: Option<&str>,
+    ) -> (StatusCode, serde_json::Value) {
+        let mut builder = Request::builder().method(method).uri(path);
+        if body.is_some() {
+            builder = builder.header("content-type", "application/json");
+        }
+        let request = builder
+            .body(body.map_or_else(Body::empty, |text| Body::from(text.to_owned())))
+            .expect("应构造请求");
+        let response = app.oneshot(request).await.expect("应得到响应");
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("应读取响应体");
+        let value = if bytes.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_slice(&bytes).expect("响应应为 JSON")
+        };
+        (status, value)
+    }
+
+    #[tokio::test]
+    async fn task_endpoints_round_trip() {
+        let (_dir, app) = app(None).await;
+
+        let (status, created) = call(
+            app.clone(),
+            Method::POST,
+            "/api/tasks",
+            Some(r#"{"kind":"scrape","payload":{"number":"ABC-123"}}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(created["status"], "queued");
+        let id = created["id"].as_i64().expect("应带任务标识");
+
+        let (status, page) = call(app.clone(), Method::GET, "/api/tasks?status=queued", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(page["total"], 1);
+
+        // 不带过滤时必须同样返回条目: 参数编号错位曾让 items 为空而 total 正确.
+        let (status, page) = call(app.clone(), Method::GET, "/api/tasks", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(page["items"].as_array().map(Vec::len), Some(1));
+
+        let (status, cancelled) = call(
+            app.clone(),
+            Method::POST,
+            &format!("/api/tasks/{id}/cancel"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(cancelled["status"], "cancelled");
+
+        let (status, retried) = call(
+            app.clone(),
+            Method::POST,
+            &format!("/api/tasks/{id}/retry"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(retried["retry_of"], id);
+        assert_eq!(retried["status"], "queued");
+
+        let (status, _) = call(app, Method::GET, "/api/tasks/9999", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn task_endpoints_reject_unknown_vocabulary() {
+        let (_dir, app) = app(None).await;
+
+        let (status, body) = call(
+            app.clone(),
+            Method::POST,
+            "/api/tasks",
+            Some(r#"{"kind":"unknown","payload":{}}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["code"], "invalid_task_kind");
+
+        let (status, body) = call(app, Method::GET, "/api/tasks?status=bogus", None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["code"], "invalid_task_status");
+    }
+
+    #[tokio::test]
+    async fn scrape_task_runs_and_records_log() {
+        let (_dir, app, state) = app_state(None).await;
+        let worker = state.runtime.tasks.start();
+
+        let (status, created) = call(
+            app.clone(),
+            Method::POST,
+            "/api/tasks",
+            Some(r#"{"kind":"scrape","payload":{"number":"ABC-123"}}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        let id = created["id"].as_i64().expect("应带任务标识");
+
+        let mut settled = serde_json::Value::Null;
+        for _ in 0..200 {
+            let (_, task) = call(app.clone(), Method::GET, &format!("/api/tasks/{id}"), None).await;
+            if task["status"] == "failed" {
+                settled = task;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        assert_eq!(settled["status"], "failed", "没有来源时任务应以失败结束");
+        assert!(
+            settled["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("没有来源返回结果"),
+            "失败说明应指出没有来源返回结果"
+        );
+
+        let (status, log) = call(app, Method::GET, &format!("/api/tasks/{id}/log"), None).await;
+        assert_eq!(status, StatusCode::OK);
+        let lines = log["items"].as_array().expect("日志应为数组");
+        assert!(!lines.is_empty(), "任务应留下日志");
+        assert_eq!(lines.last().expect("应有内容")["level"], "error");
+
+        state.runtime.tasks.shutdown();
+        worker.abort();
+    }
+
     #[test]
     fn openapi_lists_every_route() {
         let document = super::openapi();
@@ -275,6 +437,12 @@ mod tests {
             "/api/metadata/{number}",
             "/api/number/extract",
             "/api/config/schema",
+            "/api/tasks",
+            "/api/tasks/{id}",
+            "/api/tasks/{id}/cancel",
+            "/api/tasks/{id}/retry",
+            "/api/tasks/{id}/log",
+            "/api/tasks/{id}/children",
         ] {
             assert!(paths.contains_key(expected), "缺少路径 {expected}");
         }

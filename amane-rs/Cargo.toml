@@ -2,8 +2,8 @@
 resolver = "3"
 # 桌面壳 (crates/desktop) 在 M3 加入: 它依赖 Tauri, 会把整条 BoringSSL 与 WebView 构建链
 # 拉进默认构建, 首个切片先只验证 HTTP 契约与业务内核.
-members = ["crates/core", "crates/crawlers", "crates/server"]
-default-members = ["crates/core", "crates/crawlers", "crates/server"]
+members = ["crates/core", "crates/crawlers", "crates/runtime", "crates/server"]
+default-members = ["crates/core", "crates/crawlers", "crates/runtime", "crates/server"]
 
 [workspace.package]
 version = "0.1.0"
@@ -15,6 +15,7 @@ rust-version = "1.98"
 # 工作区内部包
 amane-core = { path = "crates/core" }
 amane-crawlers = { path = "crates/crawlers" }
+amane-runtime = { path = "crates/runtime" }
 
 # 序列化与校验
 serde = { version = "1", features = ["derive"] }
@@ -29,6 +30,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
 async-trait = "0.1"
+tokio-util = "0.7"
 
 # 持久化
 sqlx = { version = "0.8", default-features = false, features = [
