@@ -18,6 +18,7 @@ Amane 的 Rust 实现, 逐步替代 `src/amane/` 的 Python 实现. 覆盖范围
 |------|------|
 | `crates/core/` | 业务内核: 番号、条目、配置、持久化. 不依赖传输层 |
 | `crates/crawlers/` | 来源契约与登记表. 站点实现编译进二进制, 无插件宿主 |
+| `crates/net/` | 出站 HTTP: 指纹轮换与按 host 限速. 不感知站点语义 |
 | `crates/runtime/` | 任务处理函数: 把来源与持久化接起来. 跨 crate 的编排放这里 |
 | `crates/server/` | axum 适配: 路由、DTO、错误映射、OpenAPI |
 | `ui/` | Vue 3 前端. 只经 HTTP 契约访问后端 |

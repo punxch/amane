@@ -14,7 +14,8 @@
 
 ## 构建依赖
 
-- Rust 下限 1.98, 工作区钉在 `rust-toolchain.toml` 指定的版本, CI 使用同一版本。引入 `wreq` 后还会需要 cmake、perl 与 nasm: 它是 BoringSSL 的构建前提, 供货商档位由 `wreq-util` 提供。
+- Rust 下限 1.98, 工作区钉在 `rust-toolchain.toml` 指定的版本, CI 使用同一版本。
+- `amane-net` 经 `wreq` 使用 BoringSSL (`btls-sys`), 构建需要 cmake 与 C/C++ 工具链; Windows 的 x86_64 目标另需 nasm。BoringSSL 只在本机编译一次, 之后进入增量缓存。
 - 前端需要 pnpm。`ui/` 使用 pnpm 12 的 `allowBuilds` 放行 `esbuild` 的构建脚本; 低于 12 的版本会以「Ignored build scripts」中止安装。
 
 ## CI 范围
