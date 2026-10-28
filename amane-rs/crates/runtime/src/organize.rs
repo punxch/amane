@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use amane_core::organize::{ConflictAction, ExecuteRequest, ItemOutcome};
+use amane_core::organize::{ConflictAction, ExecuteRequest, ItemOutcome, PreviewAssembler};
 use amane_core::{
     OrganizeError, OrganizeRepository, TaskContext, TaskError, TaskHandler, TaskKind, TaskOutcome,
 };
@@ -21,10 +21,10 @@ struct OrganizePayload {
     choices: BTreeMap<String, String>,
 }
 
-/// 把整理任务接到库登记、整理登记与配置快照上.
+/// 把整理任务接到库登记、预览装配与配置快照上.
 pub struct OrganizeHandler {
     libraries: amane_core::LibraryRepository,
-    metadata: amane_core::MetadataRepository,
+    preview: PreviewAssembler,
     plans: OrganizeRepository,
     settings: Arc<ArcSwap<Settings>>,
 }
@@ -32,13 +32,13 @@ pub struct OrganizeHandler {
 impl OrganizeHandler {
     pub fn new(
         libraries: amane_core::LibraryRepository,
-        metadata: amane_core::MetadataRepository,
+        preview: PreviewAssembler,
         plans: OrganizeRepository,
         settings: Arc<ArcSwap<Settings>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             libraries,
-            metadata,
+            preview,
             plans,
             settings,
         })
@@ -62,57 +62,13 @@ impl TaskHandler for OrganizeHandler {
             .ok_or_else(|| TaskError::Failed(format!("媒体库 {} 不存在", payload.library_id)))?;
 
         let settings = self.settings.load_full();
-        let template = amane_core::Template::parse(&settings.hot.organize.video_template)
-            .map_err(|error| TaskError::Failed(format!("路径模板无法解析: {error}")))?;
 
-        // 与预览取同一份完整集合: 按页取会让超出页大小的文件既不整理也不提示.
-        let media = self
-            .libraries
-            .all_files(payload.library_id, Some(amane_core::ScanKind::Media))
+        // 与 HTTP 预览同一套装配: 目标路径一致由「同一份输入 + 同一函数」保证.
+        let preview = self
+            .preview
+            .assemble(&root, &settings.hot.organize.video_template)
             .await
-            .map_err(|error| TaskError::Failed(format!("读取扫描索引失败: {error}")))?;
-
-        // 与预览同一套配对与渲染: 目标路径一致由「同一份输入 + 同一函数」保证.
-        let mut numbers: Vec<(usize, amane_core::MediaNumber)> = Vec::new();
-        let mut unmatched = 0i64;
-        for (index, file) in media.iter().enumerate() {
-            match amane_core::number_from_path(&file.path) {
-                Some(number) => numbers.push((index, number)),
-                None => unmatched += 1,
-            }
-        }
-        let metadata = &self.metadata;
-        let entries: Vec<Option<amane_core::Metadata>> = futures::future::join_all(
-            numbers
-                .iter()
-                .map(|(_, number)| async move { metadata.find(number).await }),
-        )
-        .await
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| TaskError::Failed(format!("查询番号条目失败: {error}")))?;
-
-        let mut preview_requests: Vec<amane_core::PreviewRequest> =
-            Vec::with_capacity(numbers.len());
-        for ((index, number), entry) in numbers.iter().zip(&entries) {
-            preview_requests.push(amane_core::PreviewRequest {
-                source_rel: &media[*index].path,
-                number: number.as_str(),
-                entry: entry.as_ref(),
-            });
-        }
-
-        let plans: BTreeMap<String, String> = self
-            .plans
-            .list_for_root(root.id)
-            .await
-            .map_err(|error| TaskError::Failed(format!("读取整理登记失败: {error}")))?
-            .into_iter()
-            .map(|plan| (plan.path, plan.number))
-            .collect();
-
-        let preview =
-            amane_core::build_preview(&template, &root.path_buf(), &preview_requests, &plans);
+            .map_err(|error| TaskError::Failed(error.to_string()))?;
 
         // 处置选择: 预览标出的冲突项没有明确选择时按跳过处理, 不得默默覆盖.
         let requests: Vec<ExecuteRequest> = preview
@@ -143,7 +99,7 @@ impl TaskHandler for OrganizeHandler {
                 "开始整理 {}: {} 个文件, {} 个提取不出番号",
                 root.path,
                 requests.len(),
-                unmatched
+                preview.unmatched
             ))
             .await;
 
@@ -245,8 +201,9 @@ mod tests {
         let libraries = LibraryRepository::new(database.clone());
         let metadata = MetadataRepository::new(database.clone());
         let plans = OrganizeRepository::new(database);
+        let preview = amane_core::PreviewAssembler::new(libraries.clone(), metadata, plans.clone());
         let settings = Arc::new(ArcSwap::from_pointee(Settings::default()));
-        let handler = OrganizeHandler::new(libraries, metadata, plans, settings);
+        let handler = OrganizeHandler::new(libraries, preview, plans, settings);
         (dir, handler)
     }
 
@@ -415,7 +372,8 @@ mod tests {
             },
             ..Settings::default()
         }));
-        let handler = OrganizeHandler::new(libraries, metadata, plans, settings);
+        let preview = amane_core::PreviewAssembler::new(libraries.clone(), metadata, plans.clone());
+        let handler = OrganizeHandler::new(libraries, preview, plans, settings);
 
         run(
             &handler,

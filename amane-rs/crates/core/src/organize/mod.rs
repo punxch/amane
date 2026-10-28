@@ -1,6 +1,7 @@
 //! 路径模板与整理预览、执行、清理: 渲染目标路径、判定冲突; 执行按预览目标移动文件, 清理先出清单再入回收目录.
 
 pub mod aggregate;
+pub mod assembly;
 pub mod cleanup;
 pub mod execute;
 pub mod model;
@@ -9,6 +10,7 @@ pub mod repository;
 pub mod template;
 
 pub use aggregate::{OrganizePreview, PreviewRequest, build_preview, number_from_path};
+pub use assembly::{PreviewAssembler, PreviewError};
 pub use cleanup::{
     CleanupError, CleanupItem, RestoreError, TrashItem, build_cleanup_manifest, execute_cleanup,
     list_trash, restore_from_trash, trash_total_size,

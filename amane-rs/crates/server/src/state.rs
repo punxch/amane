@@ -38,6 +38,8 @@ pub struct Runtime {
     pub resources: Arc<ResourceStore>,
     /// 删除条目的入口: 库内事务与文件清理都在它后面.
     pub removal: amane_core::MetadataRemoval,
+    /// 整理预览的装配: HTTP 端点与整理任务共用.
+    pub preview: amane_core::PreviewAssembler,
     /// 来源登记表. 处理函数用它获取, 筛选端点用它给出可选项.
     pub sources: Arc<Registry>,
     /// 定时任务登记与调度器. 循环由进程入口启动.
@@ -91,13 +93,19 @@ impl Runtime {
         let libraries = LibraryRepository::new(database.clone());
         let organize = OrganizeRepository::new(database.clone());
         let settings = Arc::new(ArcSwap::from_pointee(settings));
+        // 预览装配在 HTTP 端点与整理任务之间共用, 先于处理函数表构造.
+        let preview = amane_core::PreviewAssembler::new(
+            libraries.clone(),
+            metadata.clone(),
+            organize.clone(),
+        );
         let handlers: Vec<Arc<dyn TaskHandler>> = vec![
             ScrapeHandler::new(Arc::clone(&sources), metadata.clone()),
             AssetsHandler::new(metadata.clone(), Arc::clone(&resources)),
             ScanHandler::new(libraries.clone(), Arc::clone(&settings)),
             OrganizeHandler::new(
                 libraries.clone(),
-                metadata.clone(),
+                preview.clone(),
                 organize.clone(),
                 Arc::clone(&settings),
             ),
@@ -123,6 +131,7 @@ impl Runtime {
             tasks,
             resources,
             removal,
+            preview,
             sources,
             schedules,
             scheduler,

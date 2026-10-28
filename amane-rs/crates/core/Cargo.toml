@@ -10,6 +10,7 @@ async-trait.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true
 croner.workspace = true
+futures.workspace = true
 regex.workspace = true
 schemars.workspace = true
 serde.workspace = true

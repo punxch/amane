@@ -1197,58 +1197,12 @@ pub async fn organize_preview(
     let root = require_library(&state, id).await?;
 
     let settings = state.runtime.settings();
-    let template = amane_core::Template::parse(&settings.hot.organize.video_template)
-        .map_err(|error| ApiError::Internal(format!("路径模板无法解析: {error}")))?;
-
-    // 扫描索引里的媒体文件是预览的全部对象: 按页取会让超出页大小的文件既不预览也不提示.
-    let media = state
+    let preview = state
         .runtime
-        .libraries
-        .all_files(id, Some(amane_core::ScanKind::Media))
-        .await?;
-
-    // 逐文件提取番号; 提取不出的计入 unmatched, 不进入预览.
-    let mut unmatched = 0i64;
-    let mut numbers: Vec<(usize, amane_core::MediaNumber)> = Vec::new();
-    for (index, file) in media.iter().enumerate() {
-        match amane_core::number_from_path(&file.path) {
-            Some(number) => numbers.push((index, number)),
-            None => unmatched += 1,
-        }
-    }
-
-    // 条目查询并行发出: 读池多连接, 一次配齐全部条目.
-    // 查询失败必须上抛: 当成「条目缺席」会把预览渲染成另一副样子, 界面上看不出区别.
-    let metadata = &state.runtime.metadata;
-    let entries: Vec<Option<amane_core::Metadata>> = futures::future::join_all(
-        numbers
-            .iter()
-            .map(|(_, number)| async move { metadata.find(number).await }),
-    )
-    .await
-    .into_iter()
-    .collect::<Result<Vec<_>, _>>()
-    .map_err(|error| ApiError::Internal(format!("查询番号条目失败: {error}")))?;
-
-    let mut preview_requests: Vec<amane_core::PreviewRequest> = Vec::with_capacity(numbers.len());
-    for ((index, number), entry) in numbers.iter().zip(&entries) {
-        preview_requests.push(amane_core::PreviewRequest {
-            source_rel: &media[*index].path,
-            number: number.as_str(),
-            entry: entry.as_ref(),
-        });
-    }
-
-    let plans: std::collections::BTreeMap<String, String> = state
-        .runtime
-        .organize
-        .list_for_root(root.id)
-        .await?
-        .into_iter()
-        .map(|plan| (plan.path, plan.number))
-        .collect();
-
-    let preview = amane_core::build_preview(&template, &root.path_buf(), &preview_requests, &plans);
+        .preview
+        .assemble(&root, &settings.hot.organize.video_template)
+        .await
+        .map_err(|error| ApiError::Internal(error.to_string()))?;
 
     Ok(Json(OrganizePreviewDto {
         items: preview
@@ -1261,7 +1215,7 @@ pub async fn organize_preview(
                 conflict: item.conflict.map(|kind| kind.as_str().to_owned()),
             })
             .collect(),
-        unmatched: unmatched + preview.unmatched,
+        unmatched: preview.unmatched,
         stale: preview.stale,
     }))
 }

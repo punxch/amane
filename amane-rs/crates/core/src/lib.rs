@@ -30,9 +30,9 @@ pub use metadata::{
 pub use number::{MediaNumber, NumberError};
 pub use organize::{
     CleanupItem, ConflictAction, ConflictKind, OrganizeError, OrganizePlan, OrganizePreview,
-    OrganizeRepository, PLACEHOLDERS, PreviewItem, PreviewRequest, Template, TemplateError,
-    TrashItem, build_cleanup_manifest, build_preview, execute_batch, execute_cleanup, list_trash,
-    number_from_path, restore_from_trash, trash_total_size,
+    OrganizeRepository, PLACEHOLDERS, PreviewAssembler, PreviewError, PreviewItem, PreviewRequest,
+    Template, TemplateError, TrashItem, build_cleanup_manifest, build_preview, execute_batch,
+    execute_cleanup, list_trash, number_from_path, restore_from_trash, trash_total_size,
 };
 pub use resource::{Resource, ResourceError, ResourceRepository};
 pub use schedule::{

@@ -61,6 +61,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "croner",
+ "futures",
  "regex",
  "schemars 1.2.3",
  "serde",
