@@ -925,8 +925,11 @@ impl MetadataRepository {
     /// 删除条目与全部关联数据, 返回不再被引用的资源.
     ///
     /// 只处理数据库: 外部请用 [`MetadataRemoval`], 它按「数据库先行、文件随后」的顺序
-    /// 把文件也清掉.
-    pub async fn delete(&self, number: &MediaNumber) -> Result<Vec<Resource>, RepositoryError> {
+    /// 把文件也清掉. 这里收窄为 `pub(crate)`, 绕过清理的入口从类型上就不存在.
+    pub(crate) async fn delete(
+        &self,
+        number: &MediaNumber,
+    ) -> Result<Vec<Resource>, RepositoryError> {
         let mut transaction = self.database.write().begin().await?;
 
         let existing: Option<(i64, Option<i64>, Option<i64>)> = sqlx::query_as(
