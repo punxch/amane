@@ -27,6 +27,10 @@ export type CreateScheduleRequest = Schemas["CreateScheduleRequest"];
 export type UpdateScheduleRequest = Schemas["UpdateScheduleRequest"];
 export type ConfigState = Schemas["ConfigState"];
 export type SettingsDto = Schemas["SettingsDto"];
+export type LibraryDto = Schemas["LibraryDto"];
+export type LibraryPage = Schemas["LibraryPage"];
+export type LibraryFilePage = Schemas["LibraryFilePage"];
+export type CreateLibraryRequest = Schemas["CreateLibraryRequest"];
 
 /** 保存配置的请求体; 字段与 `Settings` 一致, 由后端拒绝未知取值. */
 export interface ConfigBody {
@@ -201,4 +205,24 @@ export const api = {
 
   deleteSchedule: (id: number): Promise<void> =>
     request(`/api/schedules/${id}`, { method: "DELETE" }),
+
+  listLibraries: (): Promise<LibraryPage> => request("/api/libraries"),
+
+  createLibrary: (payload: CreateLibraryRequest): Promise<LibraryDto> =>
+    request("/api/libraries", { method: "POST", body: JSON.stringify(payload) }),
+
+  deleteLibrary: (id: number): Promise<void> =>
+    request(`/api/libraries/${id}`, { method: "DELETE" }),
+
+  scanLibrary: (id: number): Promise<TaskDto> =>
+    request(`/api/libraries/${id}/scan`, { method: "POST" }),
+
+  libraryFiles: (id: number, kind: string | null): Promise<LibraryFilePage> => {
+    const query = new URLSearchParams();
+    if (kind !== null) {
+      query.set("kind", kind);
+    }
+    const suffix = query.size === 0 ? "" : `?${query.toString()}`;
+    return request(`/api/libraries/${id}/files${suffix}`);
+  },
 };

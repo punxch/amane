@@ -409,6 +409,14 @@ pub struct HotSettingsDto {
     pub concurrency: u32,
     pub request_timeout_secs: u32,
     pub enabled_sources: Vec<String>,
+    pub scan: ScanSettingsDto,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ScanSettingsDto {
+    pub media_extensions: Vec<String>,
+    pub min_file_size: u64,
+    pub blacklist_patterns: Vec<String>,
 }
 
 impl SettingsDto {
@@ -423,6 +431,11 @@ impl SettingsDto {
                 concurrency: value.hot.concurrency,
                 request_timeout_secs: value.hot.request_timeout_secs,
                 enabled_sources: value.hot.enabled_sources.clone(),
+                scan: ScanSettingsDto {
+                    media_extensions: value.hot.scan.media_extensions.clone(),
+                    min_file_size: value.hot.scan.min_file_size,
+                    blacklist_patterns: value.hot.scan.blacklist_patterns.clone(),
+                },
             },
         }
     }
@@ -436,4 +449,77 @@ pub struct ConfigState {
     pub applied: Vec<String>,
     /// 发生变化的冷配置字段; 非空表示需要重启进程.
     pub restart_required: Vec<String>,
+}
+
+/// 媒体库登记的传输形态.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct LibraryDto {
+    pub id: i64,
+    /// 登记的绝对路径.
+    pub path: String,
+    pub created_at: DateTime<Utc>,
+    /// 最近一次扫描的各类统计; 从未扫描时全为 0.
+    pub counts: LibraryCountsDto,
+}
+
+/// 每个类别的条数.
+#[derive(Debug, Default, Serialize, ToSchema)]
+pub struct LibraryCountsDto {
+    pub media: i64,
+    pub unwanted: i64,
+    pub system: i64,
+    pub unrecognized: i64,
+    pub leftover_dir: i64,
+}
+
+impl From<amane_core::KindCounts> for LibraryCountsDto {
+    fn from(value: amane_core::KindCounts) -> Self {
+        Self {
+            media: value.media,
+            unwanted: value.unwanted,
+            system: value.system,
+            unrecognized: value.unrecognized,
+            leftover_dir: value.leftover_dir,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateLibraryRequest {
+    /// 要登记的目录路径.
+    pub path: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct LibraryPage {
+    pub total: i64,
+    pub items: Vec<LibraryDto>,
+}
+
+/// 扫描索引里一条记录的传输形态.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct LibraryFileDto {
+    /// 相对库根目录的相对路径.
+    pub path: String,
+    /// 归类, 取值见 `ScanKind`: media / unwanted / system / unrecognized / leftover_dir.
+    pub kind: String,
+    /// 无效文件命中的规则名: blacklist 或 undersized.
+    pub rule: Option<String>,
+    /// 命中的模式原文或补充说明.
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct LibraryFilePage {
+    pub total: i64,
+    pub items: Vec<LibraryFileDto>,
+}
+
+/// 列出扫描索引时的类别过滤.
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct LibraryFileQuery {
+    /// 只列出该类别; 缺省列出全部.
+    pub kind: Option<String>,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
 }

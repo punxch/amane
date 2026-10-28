@@ -38,6 +38,8 @@ pub struct HotSettings {
     /// 启用的来源标识; 为空表示全部启用.
     #[schemars(extend("x-widget" = "list"))]
     pub enabled_sources: Vec<String>,
+    /// 扫描规则: 媒体扩展名、大小阈值与文件黑名单.
+    pub scan: ScanSettings,
 }
 
 impl Default for HotSettings {
@@ -46,7 +48,67 @@ impl Default for HotSettings {
             concurrency: 4,
             request_timeout_secs: 20,
             enabled_sources: Vec::new(),
+            scan: ScanSettings::default(),
         }
+    }
+}
+
+/// 扫描规则. 每次扫描开始时从配置快照编译, 改完下一次扫描即生效.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct ScanSettings {
+    /// 视为媒体的扩展名; 带前导点, 大小写不敏感.
+    #[schemars(extend("x-widget" = "list"))]
+    pub media_extensions: Vec<String>,
+    /// 最小视频字节数; 0 表示关闭大小过滤.
+    #[schemars(range(min = 0), extend("x-widget" = "number"))]
+    pub min_file_size: u64,
+    /// 文件黑名单正则; 与文件名 (含扩展名) 匹配, 命中即归入无效文件.
+    #[schemars(extend("x-widget" = "list"))]
+    pub blacklist_patterns: Vec<String>,
+}
+
+impl Default for ScanSettings {
+    fn default() -> Self {
+        Self {
+            media_extensions: crate::library::DEFAULT_MEDIA_EXTENSIONS
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect(),
+            min_file_size: 0,
+            blacklist_patterns: Vec::new(),
+        }
+    }
+}
+
+impl ScanSettings {
+    /// 校验扩展名与黑名单正则. 非法取值在提交时拒绝, 不等下一次扫描才炸.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        for extension in &self.media_extensions {
+            let normalized = crate::library::normalize_extension(extension);
+            let body = normalized.trim_start_matches('.');
+            if body.is_empty()
+                || !body
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+            {
+                return Err(ConfigError::BadValue {
+                    field: "scan.media_extensions",
+                    reason: format!("扩展名 {extension:?} 不合法"),
+                });
+            }
+        }
+
+        for pattern in &self.blacklist_patterns {
+            if regex::Regex::new(pattern).is_err() {
+                return Err(ConfigError::BadValue {
+                    field: "scan.blacklist_patterns",
+                    reason: format!("正则 {pattern:?} 无法编译"),
+                });
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -67,7 +129,7 @@ impl HotSettings {
             }
         }
 
-        Ok(())
+        self.scan.validate()
     }
 }
 
@@ -105,13 +167,40 @@ pub enum ConfigError {
     },
     #[error("未知来源: {0}")]
     UnknownSource(String),
+    #[error("{field} 不合法: {reason}")]
+    BadValue { field: &'static str, reason: String },
     #[error("应用配置失败: {0}")]
     Submit(String),
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ConfigError, HotSettings, Settings};
+    use super::{ConfigError, HotSettings, ScanSettings, Settings};
+
+    #[test]
+    fn scan_settings_reject_bad_extension_and_regex() {
+        let settings = ScanSettings {
+            media_extensions: vec!["mp4".to_owned(), "not an ext!".to_owned()],
+            ..ScanSettings::default()
+        };
+        match settings.validate() {
+            Err(ConfigError::BadValue { field, .. }) => {
+                assert_eq!(field, "scan.media_extensions");
+            }
+            other => panic!("应为扩展名错误, 实际 {other:?}"),
+        }
+
+        let settings = ScanSettings {
+            blacklist_patterns: vec!["(?i".to_owned()],
+            ..ScanSettings::default()
+        };
+        match settings.validate() {
+            Err(ConfigError::BadValue { field, .. }) => {
+                assert_eq!(field, "scan.blacklist_patterns");
+            }
+            other => panic!("应为正则错误, 实际 {other:?}"),
+        }
+    }
 
     #[test]
     fn hot_settings_reject_unknown_fields() {
@@ -134,6 +223,7 @@ mod tests {
             concurrency: 1,
             request_timeout_secs: 600,
             enabled_sources: vec!["dmm".to_owned()],
+            ..HotSettings::default()
         };
 
         assert!(settings.validate(&["dmm", "javdb"]).is_ok());

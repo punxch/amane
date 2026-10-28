@@ -132,3 +132,20 @@ impl From<RepositoryError> for ApiError {
         }
     }
 }
+
+impl From<amane_core::LibraryError> for ApiError {
+    fn from(error: amane_core::LibraryError) -> Self {
+        match error {
+            amane_core::LibraryError::NotFound(id) => Self::NotFound {
+                what: format!("媒体库 {id} 不存在"),
+            },
+            amane_core::LibraryError::AlreadyRegistered(path) => Self::Conflict {
+                message: format!("路径 {path} 已登记"),
+            },
+            other => {
+                tracing::error!(%other, "媒体库操作失败");
+                Self::Internal("媒体库操作失败".to_owned())
+            }
+        }
+    }
+}

@@ -4,7 +4,9 @@
 //! 把两者接起来并写入持久化的代码在本 crate.
 
 pub mod resource;
+pub mod scan;
 pub mod scrape;
 
 pub use resource::{ResourceStore, StoreError};
+pub use scan::ScanHandler;
 pub use scrape::ScrapeHandler;

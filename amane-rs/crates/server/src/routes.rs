@@ -14,11 +14,12 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 
 use crate::dto::{
-    ConfigState, ContentTypeOption, CreateMetadataRequest, CreateScheduleRequest,
-    CreateTaskRequest, ExtractedNumber, FilterOptions, HealthResponse, ListQuery, LockRequest,
-    MetadataDto, MetadataPage, ScheduleDto, SchedulePage, SettingsDto, SourceOption, TagRequest,
-    TaskDto, TaskListQuery, TaskLogEntry, TaskLogPage, TaskPage, UpdateMetadataRequest,
-    UpdateScheduleRequest,
+    ConfigState, ContentTypeOption, CreateLibraryRequest, CreateMetadataRequest,
+    CreateScheduleRequest, CreateTaskRequest, ExtractedNumber, FilterOptions, HealthResponse,
+    LibraryCountsDto, LibraryDto, LibraryFileDto, LibraryFilePage, LibraryFileQuery, LibraryPage,
+    ListQuery, LockRequest, MetadataDto, MetadataPage, ScheduleDto, SchedulePage, SettingsDto,
+    SourceOption, TagRequest, TaskDto, TaskListQuery, TaskLogEntry, TaskLogPage, TaskPage,
+    UpdateMetadataRequest, UpdateScheduleRequest,
 };
 use crate::error::{ApiError, ErrorBody};
 use crate::state::AppState;
@@ -65,6 +66,10 @@ pub fn router() -> Router<AppState> {
             "/schedules/{id}",
             axum::routing::patch(update_schedule).delete(delete_schedule),
         )
+        .route("/libraries", get(list_libraries).post(create_library))
+        .route("/libraries/{id}", axum::routing::delete(delete_library))
+        .route("/libraries/{id}/scan", post(scan_library))
+        .route("/libraries/{id}/files", get(list_library_files))
 }
 
 #[utoipa::path(get, path = "/api/health", tag = "system", responses((status = 200, body = HealthResponse), (status = 401, body = crate::error::ErrorBody)))]
@@ -903,4 +908,210 @@ pub async fn delete_schedule(
     state.runtime.schedules.delete(id).await?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// 登记的媒体库与最近一次扫描的各类统计.
+#[utoipa::path(
+    get,
+    path = "/api/libraries",
+    tag = "library",
+    responses(
+        (status = 200, body = LibraryPage),
+        (status = 401, body = crate::error::ErrorBody)
+    )
+)]
+pub async fn list_libraries(State(state): State<AppState>) -> Result<Json<LibraryPage>, ApiError> {
+    let roots = state.runtime.libraries.list().await?;
+    let mut items = Vec::with_capacity(roots.len());
+    for root in roots {
+        let counts = state.runtime.libraries.counts(root.id).await?;
+        items.push(LibraryDto {
+            id: root.id,
+            path: root.path,
+            created_at: root.created_at,
+            counts: LibraryCountsDto::from(counts),
+        });
+    }
+    let total = i64::try_from(items.len()).unwrap_or(i64::MAX);
+
+    Ok(Json(LibraryPage { total, items }))
+}
+
+/// 验证要登记的路径: 必须存在、是目录且可读, 否则给出可读的原因.
+fn validate_root_path(raw: &str) -> Result<std::path::PathBuf, ApiError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(ApiError::Invalid {
+            code: "invalid_path",
+            message: "路径不能为空".to_owned(),
+        });
+    }
+    let path = std::path::PathBuf::from(trimmed);
+    let metadata = std::fs::metadata(&path).map_err(|error| ApiError::Invalid {
+        code: "invalid_path",
+        message: format!("路径 {} 不可用: {error}", path.display()),
+    })?;
+    if !metadata.is_dir() {
+        return Err(ApiError::Invalid {
+            code: "invalid_path",
+            message: format!("{} 不是目录", path.display()),
+        });
+    }
+    std::fs::read_dir(&path).map_err(|error| ApiError::Invalid {
+        code: "invalid_path",
+        message: format!("目录 {} 无法读取: {error}", path.display()),
+    })?;
+
+    // 规范化为绝对路径, 相对路径与符号链接在登记时定型.
+    path.canonicalize().map_err(|error| ApiError::Invalid {
+        code: "invalid_path",
+        message: format!("解析 {} 失败: {error}", path.display()),
+    })
+}
+
+/// 登记一个媒体库根目录. 登记本身不扫描; 扫描由任务派生.
+#[utoipa::path(
+    post,
+    path = "/api/libraries",
+    tag = "library",
+    request_body = CreateLibraryRequest,
+    responses(
+        (status = 201, body = LibraryDto),
+        (status = 400, body = crate::error::ErrorBody),
+        (status = 409, body = crate::error::ErrorBody),
+        (status = 401, body = crate::error::ErrorBody)
+    )
+)]
+pub async fn create_library(
+    State(state): State<AppState>,
+    Json(payload): Json<CreateLibraryRequest>,
+) -> Result<(StatusCode, Json<LibraryDto>), ApiError> {
+    let path = validate_root_path(&payload.path)?;
+    let root = state.runtime.libraries.create(&path).await?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(LibraryDto {
+            id: root.id,
+            path: root.path,
+            created_at: root.created_at,
+            counts: LibraryCountsDto::default(),
+        }),
+    ))
+}
+
+/// 移除登记与扫描索引. 磁盘文件不受影响.
+#[utoipa::path(
+    delete,
+    path = "/api/libraries/{id}",
+    tag = "library",
+    params(("id" = i64, Path, description = "媒体库标识")),
+    responses(
+        (status = 204),
+        (status = 404, body = crate::error::ErrorBody),
+        (status = 401, body = crate::error::ErrorBody)
+    )
+)]
+pub async fn delete_library(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<StatusCode, ApiError> {
+    state.runtime.libraries.delete(id).await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// 派生一次扫描. 结果在任务完成后由登记列表与文件端点呈现.
+#[utoipa::path(
+    post,
+    path = "/api/libraries/{id}/scan",
+    tag = "library",
+    params(("id" = i64, Path, description = "媒体库标识")),
+    responses(
+        (status = 202, body = TaskDto),
+        (status = 404, body = crate::error::ErrorBody),
+        (status = 401, body = crate::error::ErrorBody)
+    )
+)]
+pub async fn scan_library(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<(StatusCode, Json<TaskDto>), ApiError> {
+    if state.runtime.libraries.find(id).await?.is_none() {
+        return Err(ApiError::NotFound {
+            what: format!("媒体库 {id} 不存在"),
+        });
+    }
+
+    let task = state
+        .runtime
+        .tasks
+        .submit(amane_core::TaskSpec::new(
+            amane_core::TaskKind::Scan,
+            serde_json::json!({ "library_id": id }),
+        ))
+        .await
+        .map_err(map_task_error)?;
+
+    Ok((StatusCode::ACCEPTED, Json(TaskDto::from(task))))
+}
+
+/// 按类别列出扫描索引.
+#[utoipa::path(
+    get,
+    path = "/api/libraries/{id}/files",
+    tag = "library",
+    params(
+        ("id" = i64, Path, description = "媒体库标识"),
+        LibraryFileQuery
+    ),
+    responses(
+        (status = 200, body = LibraryFilePage),
+        (status = 400, body = crate::error::ErrorBody),
+        (status = 404, body = crate::error::ErrorBody),
+        (status = 401, body = crate::error::ErrorBody)
+    )
+)]
+pub async fn list_library_files(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    query: Result<Query<LibraryFileQuery>, QueryRejection>,
+) -> Result<Json<LibraryFilePage>, ApiError> {
+    if state.runtime.libraries.find(id).await?.is_none() {
+        return Err(ApiError::NotFound {
+            what: format!("媒体库 {id} 不存在"),
+        });
+    }
+    let Query(query) = parse_query(query)?;
+    let kind = match query.kind.as_deref() {
+        None | Some("") => None,
+        Some(value) => {
+            Some(
+                amane_core::ScanKind::parse(value).ok_or_else(|| ApiError::Invalid {
+                    code: "invalid_scan_kind",
+                    message: format!("未知类别: {value}"),
+                })?,
+            )
+        }
+    };
+    let limit = query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
+    let offset = query.offset.unwrap_or(0);
+    let (total, rows) = state
+        .runtime
+        .libraries
+        .files(id, kind, limit, offset)
+        .await?;
+
+    Ok(Json(LibraryFilePage {
+        total,
+        items: rows
+            .into_iter()
+            .map(|file| LibraryFileDto {
+                path: file.path,
+                kind: file.kind.as_str().to_owned(),
+                rule: file.rule,
+                detail: file.detail,
+            })
+            .collect(),
+    }))
 }

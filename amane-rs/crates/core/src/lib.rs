@@ -6,6 +6,7 @@
 pub mod config;
 pub mod content_type;
 pub mod db;
+pub mod library;
 pub mod lockable;
 pub mod metadata;
 pub mod number;
@@ -15,6 +16,10 @@ pub mod task;
 
 pub use content_type::ContentType;
 pub use db::{Database, DbError};
+pub use library::{
+    KindCounts, LibraryError, LibraryFile, LibraryRepository, LibraryRoot, ScanDiff, ScanError,
+    ScanKind, ScanRules, UnwantedRule, scan_directory,
+};
 pub use lockable::LockableField;
 pub use metadata::{
     MANUAL_SOURCE, Metadata, MetadataFilter, MetadataInput, MetadataPatch, MetadataRepository,

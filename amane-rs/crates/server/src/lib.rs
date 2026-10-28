@@ -50,6 +50,11 @@ pub use state::{AppState, Runtime};
         routes::create_schedule,
         routes::update_schedule,
         routes::delete_schedule,
+        routes::list_libraries,
+        routes::create_library,
+        routes::delete_library,
+        routes::scan_library,
+        routes::list_library_files,
     ),
     components(schemas(
         dto::MetadataDto,
@@ -77,6 +82,12 @@ pub use state::{AppState, Runtime};
         dto::ColdSettingsDto,
         dto::HotSettingsDto,
         dto::UpdateScheduleRequest,
+        dto::LibraryDto,
+        dto::LibraryCountsDto,
+        dto::LibraryPage,
+        dto::CreateLibraryRequest,
+        dto::LibraryFileDto,
+        dto::LibraryFilePage,
         error::ErrorBody,
     ))
 )]
@@ -1090,6 +1101,184 @@ mod tests {
         worker.abort();
     }
 
+    #[tokio::test]
+    async fn library_registration_rejects_unusable_paths_with_reason() {
+        let (dir, app) = app(None).await;
+
+        // 不存在的路径.
+        let (status, body) = call(
+            app.clone(),
+            Method::POST,
+            "/api/libraries",
+            Some(r#"{"path": "/nowhere/amane-missing"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["code"], "invalid_path");
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("不可用"),
+            "应说明路径不可用, 实际 {}",
+            body["message"]
+        );
+
+        // 是文件不是目录.
+        let file = dir.path().join("plain.txt");
+        std::fs::write(&file, "x").expect("应写入文件");
+        let payload = serde_json::json!({ "path": file.display().to_string() });
+        let (status, body) = call(
+            app.clone(),
+            Method::POST,
+            "/api/libraries",
+            Some(&serde_json::to_string(&payload).expect("应序列化")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("不是目录"),
+            "应说明不是目录, 实际 {}",
+            body["message"]
+        );
+
+        // 空路径.
+        let (status, _) = call(
+            app.clone(),
+            Method::POST,
+            "/api/libraries",
+            Some(r#"{"path": "  "}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn library_scan_round_trip_and_files_endpoint() {
+        let (dir, app, state) = app_state(None).await;
+        let worker = state.runtime.tasks.start();
+
+        // 建一个媒体库目录: 一个媒体文件、一个附属文件、一个空子目录.
+        let library = dir.path().join("library");
+        std::fs::create_dir_all(library.join("empty")).expect("应创建库目录");
+        std::fs::write(library.join("film.mp4"), vec![0u8; 64]).expect("应写入媒体");
+        std::fs::write(library.join("note.txt"), "说明").expect("应写入附属");
+
+        let payload = serde_json::json!({ "path": library.display().to_string() });
+        let (status, created) = call(
+            app.clone(),
+            Method::POST,
+            "/api/libraries",
+            Some(&serde_json::to_string(&payload).expect("应序列化")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert!(created["path"].as_str().is_some());
+        let id = created["id"].as_i64().expect("应带标识");
+
+        // 重复登记同一目录应说明原因.
+        let (status, body) = call(
+            app.clone(),
+            Method::POST,
+            "/api/libraries",
+            Some(&serde_json::to_string(&payload).expect("应序列化")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("已登记"),
+            "应说明已登记, 实际 {}",
+            body["message"]
+        );
+
+        // 派生扫描并等它完成.
+        let (status, task) = call(
+            app.clone(),
+            Method::POST,
+            &format!("/api/libraries/{id}/scan"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        let task_id = task["id"].as_i64().expect("应带任务标识");
+        let mut settled = serde_json::Value::Null;
+        for _ in 0..200 {
+            let (_, current) = call(
+                app.clone(),
+                Method::GET,
+                &format!("/api/tasks/{task_id}"),
+                None,
+            )
+            .await;
+            if current["status"] == "done" || current["status"] == "failed" {
+                settled = current;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            settled["status"], "done",
+            "扫描应成功: {}",
+            settled["error"]
+        );
+
+        // 统计: 媒体 1、未识别 1、残留目录 1.
+        let (_, page) = call(app.clone(), Method::GET, "/api/libraries", None).await;
+        assert_eq!(page["total"], 1);
+        assert_eq!(page["items"][0]["counts"]["media"], 1);
+        assert_eq!(page["items"][0]["counts"]["unrecognized"], 1);
+        assert_eq!(page["items"][0]["counts"]["leftover_dir"], 1);
+
+        // 按类别过滤, 未识别文件不静默消失.
+        let (_, files) = call(
+            app.clone(),
+            Method::GET,
+            &format!("/api/libraries/{id}/files?kind=unrecognized"),
+            None,
+        )
+        .await;
+        assert_eq!(files["total"], 1);
+        assert_eq!(files["items"][0]["path"], "note.txt");
+
+        // 未知类别应被拒绝.
+        let (status, body) = call(
+            app.clone(),
+            Method::GET,
+            &format!("/api/libraries/{id}/files?kind=bogus"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["code"], "invalid_scan_kind");
+
+        // 删除登记后 404.
+        let (status, _) = call(
+            app.clone(),
+            Method::DELETE,
+            &format!("/api/libraries/{id}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (status, _) = call(
+            app,
+            Method::POST,
+            &format!("/api/libraries/{id}/scan"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        state.runtime.tasks.shutdown();
+        worker.abort();
+    }
+
     #[test]
     fn openapi_lists_every_route() {
         let document = super::openapi();
@@ -1115,6 +1304,10 @@ mod tests {
             "/api/tasks/{id}/children",
             "/api/schedules",
             "/api/schedules/{id}",
+            "/api/libraries",
+            "/api/libraries/{id}",
+            "/api/libraries/{id}/scan",
+            "/api/libraries/{id}/files",
         ] {
             assert!(paths.contains_key(expected), "缺少路径 {expected}");
         }

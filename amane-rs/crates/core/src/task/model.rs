@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 #[sqlx(rename_all = "snake_case")]
 pub enum TaskKind {
     Scrape,
+    /// 扫描一个媒体库目录, 归类文件并记录增量.
+    Scan,
     Organize,
     Refresh,
     Cleanup,
@@ -21,6 +23,7 @@ impl TaskKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Scrape => "scrape",
+            Self::Scan => "scan",
             Self::Organize => "organize",
             Self::Refresh => "refresh",
             Self::Cleanup => "cleanup",
@@ -33,6 +36,7 @@ impl TaskKind {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "scrape" => Some(Self::Scrape),
+            "scan" => Some(Self::Scan),
             "organize" => Some(Self::Organize),
             "refresh" => Some(Self::Refresh),
             "cleanup" => Some(Self::Cleanup),

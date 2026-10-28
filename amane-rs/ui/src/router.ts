@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from "vue-router";
 
+import LibraryPage from "@/pages/LibraryPage.vue";
 import MetadataPage from "@/pages/MetadataPage.vue";
 import SettingsPage from "@/pages/SettingsPage.vue";
 import SchedulesPage from "@/pages/SchedulesPage.vue";
@@ -9,6 +10,7 @@ export const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: "/", name: "metadata", component: MetadataPage },
+    { path: "/libraries", name: "libraries", component: LibraryPage },
     { path: "/tasks", name: "tasks", component: TasksPage },
     { path: "/schedules", name: "schedules", component: SchedulesPage },
     { path: "/settings", name: "settings", component: SettingsPage },

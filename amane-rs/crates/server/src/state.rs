@@ -5,12 +5,12 @@ use arc_swap::ArcSwap;
 
 use amane_core::config::{ConfigError, Settings};
 use amane_core::{
-    Database, DbError, MetadataRepository, ResourceRepository, ScheduleRepository, Scheduler,
-    TaskHandler, TaskRepository, TaskRepositoryError, TaskService,
+    Database, DbError, LibraryRepository, MetadataRepository, ResourceRepository,
+    ScheduleRepository, Scheduler, TaskHandler, TaskRepository, TaskRepositoryError, TaskService,
 };
 use amane_crawlers::Registry;
 use amane_net::{Rate, RateLimiters, WebClient};
-use amane_runtime::{ResourceStore, ScrapeHandler};
+use amane_runtime::{ResourceStore, ScanHandler, ScrapeHandler};
 
 /// 启动失败的原因.
 #[derive(Debug, thiserror::Error)]
@@ -43,7 +43,10 @@ pub struct Runtime {
     /// 出站客户端. 来源与资源下载共用同一份, 因此改超时会同时影响两侧.
     pub client: Arc<WebClient>,
     /// 当前配置. 热配置变更时整体替换, 冷配置只有重启后才可能变化.
-    settings: ArcSwap<Settings>,
+    /// 任务处理器持有一份, 扫描等在开始时读取快照.
+    settings: Arc<ArcSwap<Settings>>,
+    /// 媒体库登记与扫描索引.
+    pub libraries: LibraryRepository,
 }
 
 impl Runtime {
@@ -78,31 +81,37 @@ impl Runtime {
         // 热配置里的来源顺序即聚合优先级; 为空表示保持内置顺序.
         registry.apply_enabled_order(&settings.hot.enabled_sources);
         let sources = Arc::new(registry);
-        let handlers: Vec<Arc<dyn TaskHandler>> = vec![ScrapeHandler::new(
-            Arc::clone(&sources),
-            metadata.clone(),
-            Arc::clone(&resources),
-        )];
-        let tasks = Arc::new(TaskService::new(
+        let libraries = LibraryRepository::new(database.clone());
+        let settings = Arc::new(ArcSwap::from_pointee(settings));
+        let handlers: Vec<Arc<dyn TaskHandler>> = vec![
+            ScrapeHandler::new(
+                Arc::clone(&sources),
+                metadata.clone(),
+                Arc::clone(&resources),
+            ),
+            ScanHandler::new(libraries.clone(), Arc::clone(&settings)),
+        ];
+        let tasks = TaskService::new(
             task_repository,
             handlers,
-            settings.hot.concurrency as usize,
-            settings.cold.data_dir.join("tasks"),
-        ));
+            settings.load().hot.concurrency as usize,
+            settings.load().cold.data_dir.join("tasks"),
+        );
         let schedules = ScheduleRepository::new(database.clone());
         let scheduler = Arc::new(Scheduler::new(schedules.clone(), Arc::clone(&tasks)));
 
         Ok(Self {
-            settings: ArcSwap::from_pointee(settings),
+            settings,
             database,
             metadata,
-            tasks: Arc::clone(&tasks),
+            tasks,
             resources,
             sources,
             schedules,
             scheduler,
             client,
             apply_lock: tokio::sync::Mutex::new(()),
+            libraries,
         })
     }
 
@@ -162,6 +171,10 @@ impl Runtime {
             self.tasks
                 .set_concurrency(incoming.hot.concurrency as usize);
             applied.push("concurrency".to_owned());
+        }
+        if incoming.hot.scan != self.settings().hot.scan {
+            // 扫描规则在每次扫描开始时读取快照, 存储即生效.
+            applied.push("scan".to_owned());
         }
 
         // 只替换热层: 提交里的冷配置改动不在内存中生效, 要等重启进程.
