@@ -307,7 +307,7 @@ mod tests {
             .await
             .expect("应打开数据库");
         let libraries = LibraryRepository::new(database);
-        let root = libraries.create(dir.path()).await.expect("应登记成功");
+        let root = libraries.insert(dir.path()).await.expect("应登记成功");
         libraries
             .replace_files(
                 root.id,

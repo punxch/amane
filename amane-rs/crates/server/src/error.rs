@@ -182,6 +182,11 @@ impl From<amane_core::LibraryError> for ApiError {
             amane_core::LibraryError::AlreadyRegistered(path) => Self::Conflict {
                 message: format!("路径 {path} 已登记"),
             },
+            // 路径不合法是调用方的问题, 不是服务端故障.
+            amane_core::LibraryError::InvalidPath(message) => Self::Invalid {
+                code: "invalid_path",
+                message,
+            },
             other => {
                 tracing::error!(%other, "媒体库操作失败");
                 Self::Internal("媒体库操作失败".to_owned())

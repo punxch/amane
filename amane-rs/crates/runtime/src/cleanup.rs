@@ -149,7 +149,7 @@ mod tests {
             .await
             .expect("应打开数据库");
         let libraries = LibraryRepository::new(database.clone());
-        let root = libraries.create(&library).await.expect("应登记成功");
+        let root = libraries.insert(&library).await.expect("应登记成功");
         libraries
             .replace_files(root.id, &[], &[])
             .await
@@ -180,7 +180,7 @@ mod tests {
             .await
             .expect("应打开数据库");
         let libraries = LibraryRepository::new(database.clone());
-        let root = libraries.create(&library).await.expect("应登记成功");
+        let root = libraries.insert(&library).await.expect("应登记成功");
         fs::write(library.join("ads.mp4"), b"x").expect("应写入无效文件");
         fs::write(library.join("film.mp4"), b"v").expect("应写入媒体");
         libraries

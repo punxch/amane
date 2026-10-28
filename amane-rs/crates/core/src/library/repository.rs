@@ -18,6 +18,35 @@ pub enum LibraryError {
     NotFound(i64),
     #[error("路径 {0} 已登记")]
     AlreadyRegistered(String),
+    #[error("{0}")]
+    InvalidPath(String),
+}
+
+/// 校验并规范化一个待登记的根目录.
+async fn prepare_root(raw: &str) -> Result<PathBuf, LibraryError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(LibraryError::InvalidPath("路径不能为空".to_owned()));
+    }
+
+    let path = PathBuf::from(trimmed);
+    let metadata = tokio::fs::metadata(&path).await.map_err(|error| {
+        LibraryError::InvalidPath(format!("路径 {} 不可用: {error}", path.display()))
+    })?;
+    if !metadata.is_dir() {
+        return Err(LibraryError::InvalidPath(format!(
+            "{} 不是目录",
+            path.display()
+        )));
+    }
+    // 只为确认可读: 句柄当场丢弃, 遍历留给扫描任务.
+    drop(tokio::fs::read_dir(&path).await.map_err(|error| {
+        LibraryError::InvalidPath(format!("目录 {} 无法读取: {error}", path.display()))
+    })?);
+
+    tokio::fs::canonicalize(&path).await.map_err(|error| {
+        LibraryError::InvalidPath(format!("解析 {} 失败: {error}", path.display()))
+    })
 }
 
 /// 每个根目录的扫描结果统计.
@@ -55,7 +84,17 @@ impl LibraryRepository {
     }
 
     /// 登记一个根目录. 路径应先由调用方验证可读并规范化为绝对路径.
-    pub async fn create(&self, path: &Path) -> Result<LibraryRoot, LibraryError> {
+    /// 登记一个媒体库根目录.
+    ///
+    /// 收原始路径: 存在性、是否为目录、可读性在这里判定, 并规范化为绝对路径。
+    /// 相对路径与符号链接在登记时定型, 之后所有文件操作都以登记值为准。
+    pub async fn register(&self, raw: &str) -> Result<LibraryRoot, LibraryError> {
+        let path = prepare_root(raw).await?;
+        self.insert(&path).await
+    }
+
+    /// 写入登记行. 路径须已校验与规范化; 端点请用 [`LibraryRepository::register`].
+    pub async fn insert(&self, path: &Path) -> Result<LibraryRoot, LibraryError> {
         let now = Utc::now();
         let row = sqlx::query_as::<_, LibraryRoot>(
             "INSERT INTO library_root (path, created_at) VALUES (?1, ?2) RETURNING *",
@@ -329,7 +368,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::super::model::{LibraryFile, ScanKind, UnwantedRule};
-    use super::{KindCounts, LibraryRepository};
+    use super::{KindCounts, LibraryError, LibraryRepository};
     use crate::db::Database;
 
     async fn repository() -> (tempfile::TempDir, LibraryRepository) {
@@ -344,9 +383,9 @@ mod tests {
     async fn duplicate_path_is_rejected_with_reason() {
         let (_dir, repository) = repository().await;
         let path = std::path::Path::new("/tmp/amane-library");
-        repository.create(path).await.expect("首次登记应成功");
+        repository.insert(path).await.expect("首次登记应成功");
 
-        let error = repository.create(path).await.expect_err("重复登记应被拒绝");
+        let error = repository.insert(path).await.expect_err("重复登记应被拒绝");
         assert!(
             error.to_string().contains("已登记"),
             "错误应说明原因, 实际 {error}"
@@ -357,7 +396,7 @@ mod tests {
     async fn replace_files_reports_added_and_removed() {
         let (_dir, repository) = repository().await;
         let root = repository
-            .create(std::path::Path::new("/tmp/amane-library"))
+            .insert(std::path::Path::new("/tmp/amane-library"))
             .await
             .expect("应登记成功");
 
@@ -391,7 +430,7 @@ mod tests {
     async fn all_files_ignores_page_size() {
         let (_dir, repository) = repository().await;
         let root = repository
-            .create(std::path::Path::new("/tmp/amane-library"))
+            .insert(std::path::Path::new("/tmp/amane-library"))
             .await
             .expect("应登记成功");
         let files: Vec<LibraryFile> = (0..260)
@@ -417,10 +456,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn register_rejects_unusable_paths() {
+        let (_dir, repository) = repository().await;
+        let dir = tempfile::tempdir().expect("应创建临时目录");
+        let file = dir.path().join("a.mp4");
+        std::fs::write(&file, b"x").expect("应写入文件");
+
+        let missing = dir.path().join("missing");
+        for raw in [
+            "",
+            "   ",
+            missing.to_str().expect("应为 UTF-8"),
+            file.to_str().expect("应为 UTF-8"),
+        ] {
+            let result = repository.register(raw).await;
+            assert!(
+                matches!(result, Err(LibraryError::InvalidPath(_))),
+                "输入 {raw:?} 应被拒绝"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn register_stores_canonical_path() {
+        let (_dir, repository) = repository().await;
+        let dir = tempfile::tempdir().expect("应创建临时目录");
+
+        let root = repository
+            .register(dir.path().to_str().expect("应为 UTF-8"))
+            .await
+            .expect("应登记成功");
+
+        let expected = dir.path().canonicalize().expect("应规范化");
+        assert_eq!(
+            std::path::Path::new(&root.path),
+            expected,
+            "登记值应是规范化后的绝对路径"
+        );
+    }
+
+    #[tokio::test]
     async fn counts_and_files_cover_all_kinds() {
         let (_dir, repository) = repository().await;
         let root = repository
-            .create(std::path::Path::new("/tmp/amane-library"))
+            .insert(std::path::Path::new("/tmp/amane-library"))
             .await
             .expect("应登记成功");
         repository
@@ -462,7 +541,7 @@ mod tests {
     async fn delete_cascades_index_and_reports_missing() {
         let (_dir, repository) = repository().await;
         let root = repository
-            .create(std::path::Path::new("/tmp/amane-library"))
+            .insert(std::path::Path::new("/tmp/amane-library"))
             .await
             .expect("应登记成功");
         repository

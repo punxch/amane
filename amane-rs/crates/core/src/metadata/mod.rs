@@ -29,6 +29,20 @@ pub struct MetadataFilter {
 }
 
 impl MetadataFilter {
+    /// 校验取值域有界的筛选值: 来源必须在已知集合里.
+    ///
+    /// 分类是开放取值, 不在此列 —— 写错一个字得到空列表, 而不是让整个筛选报错.
+    pub fn validate(&self, known_sources: &[&str]) -> Result<(), RepositoryError> {
+        let Some(source) = self.source.as_deref() else {
+            return Ok(());
+        };
+        if known_sources.contains(&source) {
+            return Ok(());
+        }
+
+        Err(RepositoryError::InvalidInput(format!("未知来源: {source}")))
+    }
+
     /// 关键字转成 LIKE 模式. `%` 与 `_` 是通配符, 出现在关键字里必须转义,
     /// 否则用户搜 `100%` 会命中所有番号条目.
     fn pattern(&self) -> Option<String> {

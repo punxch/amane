@@ -139,7 +139,7 @@ mod tests {
     #[tokio::test]
     async fn counts_files_without_a_number() {
         let (dir, assembler, libraries, _metadata) = fixture().await;
-        let root = libraries.create(dir.path()).await.expect("应登记成功");
+        let root = libraries.insert(dir.path()).await.expect("应登记成功");
         libraries
             .replace_files(
                 root.id,
@@ -165,7 +165,7 @@ mod tests {
     #[tokio::test]
     async fn renders_target_from_entry() {
         let (dir, assembler, libraries, metadata) = fixture().await;
-        let root = libraries.create(dir.path()).await.expect("应登记成功");
+        let root = libraries.insert(dir.path()).await.expect("应登记成功");
         libraries
             .replace_files(
                 root.id,
@@ -199,7 +199,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_unparsable_template() {
         let (dir, assembler, libraries, _metadata) = fixture().await;
-        let root = libraries.create(dir.path()).await.expect("应登记成功");
+        let root = libraries.insert(dir.path()).await.expect("应登记成功");
 
         let result = assembler.assemble(&root, "{unknown}/{number}").await;
 

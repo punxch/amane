@@ -697,25 +697,12 @@ fn metadata_filter(state: &AppState, query: &ListQuery) -> Result<MetadataFilter
         }
     };
 
-    let source = match query.source.as_deref() {
-        None => None,
-        Some("") => None,
-        Some(value) => {
-            let known = state
-                .runtime
-                .sources
-                .active()
-                .iter()
-                .any(|source| source.descriptor().id == value);
-            if !known {
-                return Err(ApiError::Invalid {
-                    code: "unknown_source",
-                    message: format!("未知来源: {value}"),
-                });
-            }
-            Some(value.to_owned())
-        }
-    };
+    let source = query
+        .source
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
 
     let keyword = query
         .q
@@ -732,12 +719,20 @@ fn metadata_filter(state: &AppState, query: &ListQuery) -> Result<MetadataFilter
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
 
-    Ok(MetadataFilter {
+    let filter = MetadataFilter {
         content_type,
         source,
         keyword,
         genre,
-    })
+    };
+    // 取值域有界的来源由内核判定; 错误码留在传输层, 界面据此分支.
+    let known = state.runtime.sources.known_ids();
+    filter.validate(&known).map_err(|error| ApiError::Invalid {
+        code: "unknown_source",
+        message: error.to_string(),
+    })?;
+
+    Ok(filter)
 }
 
 /// 筛选下拉框的可选项: 类型是封闭枚举, 来源取当前登记表.
@@ -1006,38 +1001,6 @@ pub async fn list_libraries(State(state): State<AppState>) -> Result<Json<Librar
     Ok(Json(LibraryPage { total, items }))
 }
 
-/// 验证要登记的路径: 必须存在、是目录且可读, 否则给出可读的原因.
-fn validate_root_path(raw: &str) -> Result<std::path::PathBuf, ApiError> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err(ApiError::Invalid {
-            code: "invalid_path",
-            message: "路径不能为空".to_owned(),
-        });
-    }
-    let path = std::path::PathBuf::from(trimmed);
-    let metadata = std::fs::metadata(&path).map_err(|error| ApiError::Invalid {
-        code: "invalid_path",
-        message: format!("路径 {} 不可用: {error}", path.display()),
-    })?;
-    if !metadata.is_dir() {
-        return Err(ApiError::Invalid {
-            code: "invalid_path",
-            message: format!("{} 不是目录", path.display()),
-        });
-    }
-    std::fs::read_dir(&path).map_err(|error| ApiError::Invalid {
-        code: "invalid_path",
-        message: format!("目录 {} 无法读取: {error}", path.display()),
-    })?;
-
-    // 规范化为绝对路径, 相对路径与符号链接在登记时定型.
-    path.canonicalize().map_err(|error| ApiError::Invalid {
-        code: "invalid_path",
-        message: format!("解析 {} 失败: {error}", path.display()),
-    })
-}
-
 /// 登记一个媒体库根目录. 登记本身不扫描; 扫描由任务派生.
 #[utoipa::path(
     post,
@@ -1055,8 +1018,7 @@ pub async fn create_library(
     State(state): State<AppState>,
     ApiJson(payload): ApiJson<CreateLibraryRequest>,
 ) -> Result<(StatusCode, Json<LibraryDto>), ApiError> {
-    let path = validate_root_path(&payload.path)?;
-    let root = state.runtime.libraries.create(&path).await?;
+    let root = state.runtime.libraries.register(&payload.path).await?;
 
     Ok((
         StatusCode::CREATED,

@@ -107,11 +107,11 @@ mod tests {
             .expect("应打开数据库");
         let libraries = LibraryRepository::new(database.clone());
         let first = libraries
-            .create(std::path::Path::new("/tmp/amane-library-a"))
+            .insert(std::path::Path::new("/tmp/amane-library-a"))
             .await
             .expect("应登记根目录");
         let second = libraries
-            .create(std::path::Path::new("/tmp/amane-library-b"))
+            .insert(std::path::Path::new("/tmp/amane-library-b"))
             .await
             .expect("应登记根目录");
         (dir, OrganizeRepository::new(database), first.id, second.id)
