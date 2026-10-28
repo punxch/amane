@@ -687,10 +687,19 @@ fn metadata_filter(state: &AppState, query: &ListQuery) -> Result<MetadataFilter
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
 
+    // 分类是开放取值, 不做白名单校验: 写错一个字得到空列表, 而不是让整个筛选报错.
+    let genre = query
+        .genre
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+
     Ok(MetadataFilter {
         content_type,
         source,
         keyword,
+        genre,
     })
 }
 
@@ -704,7 +713,9 @@ fn metadata_filter(state: &AppState, query: &ListQuery) -> Result<MetadataFilter
         (status = 401, body = crate::error::ErrorBody)
     )
 )]
-pub async fn filter_options(State(state): State<AppState>) -> Json<FilterOptions> {
+pub async fn filter_options(
+    State(state): State<AppState>,
+) -> Result<Json<FilterOptions>, ApiError> {
     let content_types = amane_core::ContentType::ALL
         .into_iter()
         .map(|value| ContentTypeOption {
@@ -723,10 +734,13 @@ pub async fn filter_options(State(state): State<AppState>) -> Json<FilterOptions
         })
         .collect();
 
-    Json(FilterOptions {
+    let genres = state.runtime.metadata.genre_options().await?;
+
+    Ok(Json(FilterOptions {
         content_types,
         sources,
-    })
+        genres,
+    }))
 }
 
 fn map_task_error(error: TaskServiceError) -> ApiError {

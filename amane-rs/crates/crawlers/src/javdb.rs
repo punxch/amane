@@ -172,7 +172,7 @@ fn parse_detail(html: &str, number: &MediaNumber) -> Result<ScrapedMetadata, Sou
             "片商" | "製作商" | "Maker" => metadata.maker = non_empty(value),
             "發行" | "發行商" | "Label" => metadata.label = non_empty(value),
             "系列" | "Series" => metadata.series = non_empty(value),
-            "類別" | "Tags" => metadata.tags = element_texts(&value_element, &link_selector),
+            "類別" | "Tags" => metadata.genres = element_texts(&value_element, &link_selector),
             "演員" | "Actor(s)" => {
                 metadata.actors = element_texts(&value_element, &link_selector)
             }
@@ -319,7 +319,7 @@ mod tests {
         assert_eq!(scraped.maker.as_deref(), Some("エスワン"));
         assert_eq!(scraped.series, None, "空值不应写成空字符串");
         assert_eq!(scraped.actors, vec!["葵つかさ", "乙白さやか"]);
-        assert_eq!(scraped.tags, vec!["ドラマ"]);
+        assert_eq!(scraped.genres, vec!["ドラマ"]);
     }
 
     const DETAIL_EN: &str = r#"

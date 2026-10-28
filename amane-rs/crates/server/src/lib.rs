@@ -272,6 +272,7 @@ async fn require_token(State(state): State<AppState>, request: Request, next: Ne
 #[cfg(test)]
 mod tests {
     use amane_core::config::{ColdSettings, HotSettings, Settings};
+    use amane_core::{MediaNumber, MetadataInput, ScrapeWrite};
     use axum::body::{Body, to_bytes};
     use axum::http::{Method, Request, StatusCode};
     use tower::ServiceExt;
@@ -857,6 +858,66 @@ mod tests {
                 .is_some_and(|text| !text.is_empty()),
             "错误说明不能为空"
         );
+    }
+
+    #[tokio::test]
+    async fn genres_are_returned_and_filterable() {
+        let (_dir, app, state) = app_state(None).await;
+        let number = MediaNumber::parse("ABC-001").expect("应解析成功");
+        let genres = vec!["ドラマ".to_owned(), "美少女".to_owned()];
+        state
+            .runtime
+            .metadata
+            .apply_scraped(&ScrapeWrite {
+                number: &number,
+                input: MetadataInput {
+                    genres: Some(&genres),
+                    ..MetadataInput::default()
+                },
+                field_sources: std::collections::BTreeMap::from([(
+                    "genres".to_owned(),
+                    "dmm".to_owned(),
+                )]),
+            })
+            .await
+            .expect("应写入成功");
+
+        let (status, detail) = call(app.clone(), Method::GET, "/api/metadata/ABC-001", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            detail["genres"],
+            serde_json::json!(["ドラマ", "美少女"]),
+            "详情应返回分类"
+        );
+
+        let (_, options) = call(app.clone(), Method::GET, "/api/filters", None).await;
+        let listed: Vec<&str> = options["genres"]
+            .as_array()
+            .expect("分类应为数组")
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect();
+        assert!(listed.contains(&"ドラマ"), "筛选选项应含全部分类");
+
+        let (status, page) = call(
+            app.clone(),
+            Method::GET,
+            "/api/metadata?genre=%E7%BE%8E%E5%B0%91%E5%A5%B3",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(page["total"], 1, "按分类筛选应命中");
+
+        let (status, page) = call(
+            app.clone(),
+            Method::GET,
+            "/api/metadata?genre=nowhere",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(page["total"], 0, "分类是开放取值, 未知分类得到空列表");
     }
 
     #[tokio::test]

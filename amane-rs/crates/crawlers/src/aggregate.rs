@@ -71,8 +71,8 @@ pub fn aggregate(items: &[(&str, ScrapedMetadata)]) -> Aggregated {
         take_list(&mut merged, "actors", source, &scraped.actors, |metadata| {
             &mut metadata.actors
         });
-        take_list(&mut merged, "tags", source, &scraped.tags, |metadata| {
-            &mut metadata.tags
+        take_list(&mut merged, "genres", source, &scraped.genres, |metadata| {
+            &mut metadata.genres
         });
     }
 
@@ -182,6 +182,27 @@ mod tests {
             merged.metadata.actors,
             vec!["甲".to_owned()],
             "列表整份取首个非空来源, 不混拼"
+        );
+    }
+
+    #[test]
+    fn genres_come_from_the_first_source_that_has_them() {
+        let without_genres = ScrapedMetadata {
+            title: Some("标题".to_owned()),
+            ..ScrapedMetadata::default()
+        };
+        let with_genres = ScrapedMetadata {
+            genres: vec!["ドラマ".to_owned(), "美少女".to_owned()],
+            ..ScrapedMetadata::default()
+        };
+
+        let merged = aggregate(&[("a", without_genres), ("b", with_genres)]);
+
+        assert_eq!(merged.metadata.genres, vec!["ドラマ", "美少女"]);
+        assert_eq!(
+            merged.field_sources.get("genres").map(String::as_str),
+            Some("b"),
+            "分类的字段来源应记到真正提供的那个来源"
         );
     }
 

@@ -19,6 +19,8 @@ pub struct MetadataFilter {
     pub source: Option<String>,
     /// 关键字: 匹配番号或标题, 忽略大小写.
     pub keyword: Option<String>,
+    /// 分类名; 命中该分类的条目.
+    pub genre: Option<String>,
 }
 
 impl MetadataFilter {
@@ -61,6 +63,8 @@ pub struct Metadata {
     pub poster_resource_id: Option<i64>,
     /// 字段来源表; 键是字段名, 值是来源标识.
     pub field_sources: Option<Json<FieldSources>>,
+    /// 分类. 按来源整份取首个非空, 不混拼.
+    pub genres: Option<Json<Genres>>,
     /// 用户备注, 只有人工写入.
     pub note: Option<String>,
     pub content_type: ContentType,
@@ -107,6 +111,35 @@ impl From<BTreeMap<String, String>> for FieldSources {
     }
 }
 
+/// 分类列表.
+///
+/// 与演员分开: 分类没有顺序语义, 也不参与逐项修订, 存成一列 JSON 数组即可.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Genres(Vec<String>);
+
+impl Genres {
+    pub fn as_slice(&self) -> &[String] {
+        &self.0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl From<Vec<String>> for Genres {
+    fn from(value: Vec<String>) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&[String]> for Genres {
+    fn from(value: &[String]) -> Self {
+        Self(value.to_vec())
+    }
+}
+
 /// 一个来源在某一时刻返回的元数据快照.
 ///
 /// 存的是来源自己的结果, 不是聚合后的条目: 字段溯源要能回答「当时这个来源说了什么」.
@@ -121,7 +154,7 @@ pub struct ScrapedMetadata {
     pub series: Option<String>,
     pub directors: Vec<String>,
     pub actors: Vec<String>,
-    pub tags: Vec<String>,
+    pub genres: Vec<String>,
     pub poster_url: Option<String>,
 }
 
@@ -154,6 +187,8 @@ pub struct MetadataInput<'a> {
     pub label: Option<&'a str>,
     pub series: Option<&'a str>,
     pub poster_url: Option<&'a str>,
+    /// `None` 表示本次不改动分类; `Some` 表示整体替换, 空列表即清空.
+    pub genres: Option<&'a [String]>,
     /// `None` 表示本次不改动演员名单; `Some` 表示整体替换, 空列表即清空.
     pub actors: Option<&'a [String]>,
 }
@@ -202,6 +237,7 @@ impl<'a> MetadataInput<'a> {
             label: keep(locks, LockableField::Label, self.label),
             series: keep(locks, LockableField::Series, self.series),
             poster_url: keep(locks, LockableField::PosterUrl, self.poster_url),
+            genres: self.genres,
             actors: self.actors,
         }
     }
@@ -265,9 +301,9 @@ async fn upsert_row(
         r#"
         INSERT INTO metadata (
             number, title, plot, release_date, runtime_minutes,
-            maker, label, series, poster_url, content_type, created_at, updated_at
+            maker, label, series, poster_url, genres, content_type, created_at, updated_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)
         ON CONFLICT(number) DO UPDATE SET
             title = COALESCE(excluded.title, metadata.title),
             plot = COALESCE(excluded.plot, metadata.plot),
@@ -277,6 +313,7 @@ async fn upsert_row(
             label = COALESCE(excluded.label, metadata.label),
             series = COALESCE(excluded.series, metadata.series),
             poster_url = COALESCE(excluded.poster_url, metadata.poster_url),
+            genres = COALESCE(excluded.genres, metadata.genres),
             content_type = excluded.content_type,
             updated_at = excluded.updated_at
         RETURNING *
@@ -291,6 +328,7 @@ async fn upsert_row(
     .bind(input.label)
     .bind(input.series)
     .bind(input.poster_url)
+    .bind(input.genres.map(|values| Json(Genres::from(values))))
     .bind(number.content_type())
     .bind(now)
     .fetch_one(&mut **transaction)
@@ -359,6 +397,13 @@ fn push_conditions(builder: &mut QueryBuilder<'_, Sqlite>, filter: &MetadataFilt
         builder
             .push(" AND EXISTS (SELECT 1 FROM source_snapshot WHERE source_snapshot.metadata_id = metadata.id AND source_snapshot.source_id = ")
             .push_bind(source.to_owned())
+            .push(")");
+    }
+
+    if let Some(genre) = filter.genre.as_deref() {
+        builder
+            .push(" AND EXISTS (SELECT 1 FROM json_each(metadata.genres) WHERE json_each.value = ")
+            .push_bind(genre.to_owned())
             .push(")");
     }
 
@@ -795,6 +840,18 @@ impl MetadataRepository {
         Ok(())
     }
 
+    /// 全部出现过的分类, 按名称排序. 筛选下拉框据此给出可选项.
+    pub async fn genre_options(&self) -> Result<Vec<String>, RepositoryError> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT DISTINCT json_each.value FROM metadata, json_each(metadata.genres) \
+             ORDER BY json_each.value ASC",
+        )
+        .fetch_all(self.database.read())
+        .await?;
+
+        Ok(rows.into_iter().map(|(value,)| value).collect())
+    }
+
     /// 番号条目的各来源快照, 按来源标识排序.
     pub async fn snapshots(
         &self,
@@ -898,6 +955,39 @@ mod tests {
             actors: Some(actors),
             ..MetadataInput::default()
         }
+    }
+
+    #[tokio::test]
+    async fn list_filters_by_genre() {
+        let (_dir, repository) = repository().await;
+        let drama = vec!["ドラマ".to_owned()];
+        let action = vec!["アクション".to_owned()];
+        for (raw, genres) in [("ABC-001", &drama), ("ABC-002", &action)] {
+            let number = MediaNumber::parse(raw).expect("应解析成功");
+            repository
+                .upsert(
+                    &number,
+                    &MetadataInput {
+                        genres: Some(genres),
+                        ..MetadataInput::default()
+                    },
+                )
+                .await
+                .expect("应写入成功");
+        }
+
+        let filter = MetadataFilter {
+            genre: Some("ドラマ".to_owned()),
+            ..MetadataFilter::default()
+        };
+        let rows = repository.list(&filter, 10, 0).await.expect("应列出成功");
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].number, "ABC-001");
+        assert_eq!(
+            repository.genre_options().await.expect("应查询成功"),
+            vec!["アクション".to_owned(), "ドラマ".to_owned()]
+        );
     }
 
     #[tokio::test]
@@ -1181,6 +1271,7 @@ mod tests {
                     content_type: Some(ContentType::Censored),
                     source: Some("javdb".to_owned()),
                     keyword: Some("ABC".to_owned()),
+                    ..MetadataFilter::default()
                 },
                 &["ABC-001"],
             ),
@@ -1238,6 +1329,7 @@ mod tests {
                     content_type: Some(ContentType::Censored),
                     source: Some("javdb".to_owned()),
                     keyword: Some("ABC".to_owned()),
+                    ..MetadataFilter::default()
                 },
                 10,
                 0,

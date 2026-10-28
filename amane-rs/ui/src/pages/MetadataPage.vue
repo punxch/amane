@@ -24,7 +24,7 @@ const notice = ref<{ kind: "error" | "ok"; text: string } | null>(null);
 
 const filters = ref<FilterOptions | null>(null);
 const filtersFailed = ref(false);
-const query = reactive({ keyword: "", contentType: "", source: "" });
+const query = reactive({ keyword: "", contentType: "", source: "", genre: "" });
 
 const form = reactive({ number: "", title: "" });
 const probeText = ref("");
@@ -36,7 +36,11 @@ const tagDraft = ref("");
 
 const pageCount = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)));
 const hasFilter = computed(
-  () => query.keyword.trim() !== "" || query.contentType !== "" || query.source !== "",
+  () =>
+    query.keyword.trim() !== "" ||
+    query.contentType !== "" ||
+    query.source !== "" ||
+    query.genre !== "",
 );
 
 function report(kind: "error" | "ok", text: string): void {
@@ -55,6 +59,7 @@ async function load(): Promise<void> {
       keyword: query.keyword,
       contentType: query.contentType,
       source: query.source,
+      genre: query.genre,
       limit: PAGE_SIZE,
       offset: pageIndex.value * PAGE_SIZE,
     });
@@ -343,6 +348,15 @@ onMounted(async () => {
               {{ option.label }}
             </option>
           </select>
+          <select
+            v-model="query.genre"
+            class="scheme-dark rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1.5 text-sm text-neutral-300 outline-none focus:border-emerald-600"
+          >
+            <option value="">全部分类</option>
+            <option v-for="genre in filters?.genres ?? []" :key="genre" :value="genre">
+              {{ genre }}
+            </option>
+          </select>
           <div class="ml-auto flex items-center gap-3">
             <span v-if="filtersFailed" class="text-xs text-amber-600">
               筛选项未加载，只能按关键字检索
@@ -519,6 +533,10 @@ onMounted(async () => {
             class="mt-2 truncate font-mono text-xs text-amber-600"
           >
             海报尚未存到本地: {{ detail.poster_url }}
+          </p>
+
+          <p v-if="detail.genres.length > 0" class="mt-2 text-xs text-neutral-400">
+            分类: {{ detail.genres.join("、") }}
           </p>
 
           <p v-if="detail.actors.length > 0" class="mt-2 text-xs text-neutral-400">

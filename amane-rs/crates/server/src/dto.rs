@@ -36,6 +36,8 @@ pub struct MetadataDto {
     pub locked_fields: Vec<String>,
     /// 用户标签.
     pub tags: Vec<String>,
+    /// 分类; 按来源整份取首个非空.
+    pub genres: Vec<String>,
     /// 逐字段视图; 只有详情端点填充.
     pub fields: Vec<MetadataFieldDto>,
     /// 类型, 取值见 `ContentType`.
@@ -70,6 +72,11 @@ impl From<Metadata> for MetadataDto {
             note: value.note,
             locked_fields: Vec::new(),
             tags: Vec::new(),
+            genres: value
+                .genres
+                .as_ref()
+                .map(|json| json.0.as_slice().to_vec())
+                .unwrap_or_default(),
             fields: Vec::new(),
             content_type: value.content_type.as_str().to_owned(),
             created_at: value.created_at,
@@ -195,6 +202,8 @@ pub struct ListQuery {
     pub source: Option<String>,
     /// 关键字, 匹配番号与标题, 忽略大小写.
     pub q: Option<String>,
+    /// 分类名; 取值由 `GET /api/filters` 给出.
+    pub genre: Option<String>,
 }
 
 /// 筛选可选项. 取值域由服务端给出, 界面不自行维护枚举.
@@ -202,6 +211,7 @@ pub struct ListQuery {
 pub struct FilterOptions {
     pub content_types: Vec<ContentTypeOption>,
     pub sources: Vec<SourceOption>,
+    pub genres: Vec<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]

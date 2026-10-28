@@ -114,6 +114,7 @@ impl TaskHandler for ScrapeHandler {
             label: scraped.label.as_deref(),
             series: scraped.series.as_deref(),
             poster_url: scraped.poster_url.as_deref(),
+            genres: Some(&scraped.genres),
             actors: Some(&scraped.actors),
         };
 

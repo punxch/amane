@@ -183,7 +183,7 @@ fn parse_digital(response: &Value, number: &MediaNumber) -> Result<ScrapedMetada
         series: text(&content["series"]["name"]),
         directors: names(&content["directors"]),
         actors: names(&content["actresses"]),
-        tags: names(&content["genres"]),
+        genres: names(&content["genres"]),
         poster_url: text(&content["packageImage"]["largeUrl"])
             .or_else(|| text(&content["packageImage"]["mediumUrl"])),
     })

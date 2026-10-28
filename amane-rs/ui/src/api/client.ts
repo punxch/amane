@@ -137,6 +137,7 @@ export interface MetadataQuery {
   keyword?: string;
   contentType?: string | null;
   source?: string | null;
+  genre?: string | null;
   limit?: number;
   offset?: number;
 }
@@ -156,6 +157,9 @@ export const api = {
     }
     if (query.source !== null && query.source !== undefined && query.source !== "") {
       params.set("source", query.source);
+    }
+    if (query.genre !== null && query.genre !== undefined && query.genre !== "") {
+      params.set("genre", query.genre);
     }
     return request(`/api/metadata?${params.toString()}`);
   },
