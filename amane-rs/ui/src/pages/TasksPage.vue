@@ -220,7 +220,15 @@ onUnmounted(() => {
               @click="select(task)"
             >
               <td class="px-4 py-2 font-mono text-neutral-400">{{ task.id }}</td>
-              <td class="px-4 py-2 text-neutral-300">{{ task.kind }}</td>
+              <td class="px-4 py-2 text-neutral-300">
+                {{ task.kind }}
+                <span
+                  v-if="task.schedule_id !== null"
+                  class="ml-1 rounded bg-neutral-800 px-1 py-0.5 font-mono text-[10px] text-neutral-500"
+                >
+                  定时任务 #{{ task.schedule_id }}
+                </span>
+              </td>
               <td class="px-4 py-2" :class="statusClass(task.status)">
                 {{ statusLabel(task.status) }}
               </td>

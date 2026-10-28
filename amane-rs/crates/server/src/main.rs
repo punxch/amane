@@ -55,14 +55,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let state = AppState::new(runtime);
     let worker = state.runtime.tasks.start();
+    let scheduler_loop = state.runtime.scheduler.clone().spawn();
 
     axum::serve(listener, build_router(state.clone()))
         .with_graceful_shutdown(shutdown_signal())
         .await?;
 
-    // 先停止出队循环再退出, 避免停机过程中继续领取任务.
+    // 出队循环经优雅停机结束; 调度循环在此结束. 登记与任务都已持久化, 重启后按基准时刻继续.
     state.runtime.tasks.shutdown();
     let _ = worker.await;
+    scheduler_loop.abort();
 
     Ok(())
 }

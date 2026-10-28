@@ -83,6 +83,32 @@ impl From<amane_core::ResourceError> for ApiError {
     }
 }
 
+impl From<amane_core::ScheduleError> for ApiError {
+    fn from(error: amane_core::ScheduleError) -> Self {
+        match error {
+            amane_core::ScheduleError::NotFound(id) => Self::NotFound {
+                what: format!("定时任务 {id} 不存在"),
+            },
+            amane_core::ScheduleError::InvalidCron(message) => Self::Invalid {
+                code: "invalid_cron",
+                message,
+            },
+            amane_core::ScheduleError::InvalidTimezone(message) => Self::Invalid {
+                code: "invalid_timezone",
+                message,
+            },
+            amane_core::ScheduleError::InvalidPayload(message) => Self::Invalid {
+                code: "invalid_input",
+                message,
+            },
+            other => {
+                tracing::error!(%other, "定时任务操作失败");
+                Self::Internal("定时任务操作失败".to_owned())
+            }
+        }
+    }
+}
+
 impl From<NumberError> for ApiError {
     fn from(error: NumberError) -> Self {
         Self::InvalidNumber(error)

@@ -99,6 +99,8 @@ pub struct TaskSpec {
     pub kind: TaskKind,
     pub payload: serde_json::Value,
     pub priority: i32,
+    /// 定时登记的标识; 手工提交为 `None`.
+    pub schedule_id: Option<i64>,
 }
 
 impl TaskSpec {
@@ -107,6 +109,7 @@ impl TaskSpec {
             kind,
             payload,
             priority: 0,
+            schedule_id: None,
         }
     }
 }
@@ -122,6 +125,8 @@ pub struct Task {
     pub attempts: i32,
     pub error: Option<String>,
     pub retry_of: Option<i64>,
+    /// 由哪条定时任务派生; 手工提交为 `None`.
+    pub schedule_id: Option<i64>,
     pub created_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,

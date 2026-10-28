@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use amane_core::{LockableField, Metadata, MetadataPatch, Task, TaskLogLine};
+use amane_core::{LockableField, Metadata, MetadataPatch, Pattern, Schedule, Task, TaskLogLine};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -250,6 +250,8 @@ pub struct TaskDto {
     pub error: Option<String>,
     /// 重试来源任务的标识.
     pub retry_of: Option<i64>,
+    /// 由哪条定时任务派生; 手工提交为 `None`.
+    pub schedule_id: Option<i64>,
     pub created_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
@@ -267,6 +269,7 @@ impl From<Task> for TaskDto {
             attempts: value.attempts,
             error: value.error,
             retry_of: value.retry_of,
+            schedule_id: value.schedule_id,
             created_at: value.created_at,
             started_at: value.started_at,
             finished_at: value.finished_at,
@@ -319,4 +322,70 @@ impl From<TaskLogLine> for TaskLogEntry {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct TaskLogPage {
     pub items: Vec<TaskLogEntry>,
+}
+
+/// 定时任务的传输形态.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ScheduleDto {
+    pub id: i64,
+    /// 任务类型, 取值见 `TaskKind`.
+    pub kind: String,
+    pub payload: serde_json::Value,
+    pub cron: String,
+    /// IANA 时区名, 触发时刻按它计算.
+    pub timezone: String,
+    pub enabled: bool,
+    pub last_fired_at: Option<DateTime<Utc>>,
+    /// 下一次触发时刻, 按登记的时区计算.
+    pub next_fire_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl ScheduleDto {
+    pub fn from_schedule(value: Schedule) -> Self {
+        let next_fire_at = Pattern::parse(&value.cron, &value.timezone)
+            .ok()
+            .and_then(|pattern| {
+                pattern
+                    .next_after(value.last_fired_at.unwrap_or_else(chrono::Utc::now))
+                    .ok()
+            });
+
+        Self {
+            id: value.id,
+            kind: value.kind.to_string(),
+            payload: serde_json::from_str(&value.payload).unwrap_or(serde_json::Value::Null),
+            cron: value.cron,
+            timezone: value.timezone,
+            enabled: value.enabled,
+            last_fired_at: value.last_fired_at,
+            next_fire_at,
+            created_at: value.created_at,
+            updated_at: value.updated_at,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SchedulePage {
+    pub total: i64,
+    pub items: Vec<ScheduleDto>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateScheduleRequest {
+    /// 任务类型: scrape / organize / refresh / cleanup.
+    pub kind: String,
+    /// 任务载荷, 结构由类型决定.
+    pub payload: serde_json::Value,
+    /// 五段式 cron 表达式.
+    pub cron: String,
+    /// IANA 时区名, 例如 `Asia/Shanghai`.
+    pub timezone: String,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateScheduleRequest {
+    pub enabled: Option<bool>,
 }

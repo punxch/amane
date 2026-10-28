@@ -8,6 +8,8 @@ rust-version.workspace = true
 [dependencies]
 async-trait.workspace = true
 chrono.workspace = true
+chrono-tz.workspace = true
+croner.workspace = true
 regex.workspace = true
 schemars.workspace = true
 serde.workspace = true

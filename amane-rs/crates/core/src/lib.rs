@@ -10,6 +10,7 @@ pub mod lockable;
 pub mod metadata;
 pub mod number;
 pub mod resource;
+pub mod schedule;
 pub mod task;
 
 pub use content_type::ContentType;
@@ -21,6 +22,9 @@ pub use metadata::{
 };
 pub use number::{MediaNumber, NumberError};
 pub use resource::{Resource, ResourceError, ResourceRepository};
+pub use schedule::{
+    Pattern, Schedule, ScheduleError, SchedulePatch, ScheduleRepository, ScheduleSpec, Scheduler,
+};
 pub use task::{
     Task, TaskContext, TaskError, TaskFilter, TaskHandler, TaskKind, TaskLogLine, TaskLogger,
     TaskOutcome, TaskRepository, TaskRepositoryError, TaskService, TaskServiceError, TaskSpec,

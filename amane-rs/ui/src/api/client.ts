@@ -21,6 +21,10 @@ export type TaskLogPage = Schemas["TaskLogPage"];
 export type FilterOptions = Schemas["FilterOptions"];
 export type MetadataFieldDto = Schemas["MetadataFieldDto"];
 export type UpdateMetadataRequest = Schemas["UpdateMetadataRequest"];
+export type ScheduleDto = Schemas["ScheduleDto"];
+export type SchedulePage = Schemas["SchedulePage"];
+export type CreateScheduleRequest = Schemas["CreateScheduleRequest"];
+export type UpdateScheduleRequest = Schemas["UpdateScheduleRequest"];
 
 export class ApiError extends Error {
   public readonly code: string;
@@ -152,4 +156,15 @@ export const api = {
   taskLog: (id: number): Promise<TaskLogPage> => request(`/api/tasks/${id}/log`),
 
   taskChildren: (id: number): Promise<TaskPage> => request(`/api/tasks/${id}/children`),
+
+  listSchedules: (): Promise<SchedulePage> => request("/api/schedules"),
+
+  createSchedule: (payload: CreateScheduleRequest): Promise<ScheduleDto> =>
+    request("/api/schedules", { method: "POST", body: JSON.stringify(payload) }),
+
+  updateSchedule: (id: number, payload: UpdateScheduleRequest): Promise<ScheduleDto> =>
+    request(`/api/schedules/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+
+  deleteSchedule: (id: number): Promise<void> =>
+    request(`/api/schedules/${id}`, { method: "DELETE" }),
 };

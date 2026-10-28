@@ -1,8 +1,8 @@
 use amane_core::TaskLogger;
 use amane_core::config::Settings;
 use amane_core::{
-    LockableField, MediaNumber, MetadataFilter, MetadataInput, TaskFilter, TaskKind,
-    TaskServiceError, TaskSpec, TaskStatus,
+    LockableField, MediaNumber, MetadataFilter, MetadataInput, SchedulePatch, ScheduleSpec,
+    TaskFilter, TaskKind, TaskServiceError, TaskSpec, TaskStatus,
 };
 use axum::Json;
 use axum::Router;
@@ -14,9 +14,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 
 use crate::dto::{
-    ContentTypeOption, CreateMetadataRequest, CreateTaskRequest, ExtractedNumber, FilterOptions,
-    HealthResponse, ListQuery, LockRequest, MetadataDto, MetadataPage, SourceOption, TagRequest,
-    TaskDto, TaskListQuery, TaskLogEntry, TaskLogPage, TaskPage, UpdateMetadataRequest,
+    ContentTypeOption, CreateMetadataRequest, CreateScheduleRequest, CreateTaskRequest,
+    ExtractedNumber, FilterOptions, HealthResponse, ListQuery, LockRequest, MetadataDto,
+    MetadataPage, ScheduleDto, SchedulePage, SourceOption, TagRequest, TaskDto, TaskListQuery,
+    TaskLogEntry, TaskLogPage, TaskPage, UpdateMetadataRequest, UpdateScheduleRequest,
 };
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -48,6 +49,11 @@ pub fn router() -> Router<AppState> {
         .route("/tasks/{id}/retry", post(retry_task))
         .route("/tasks/{id}/log", get(task_log))
         .route("/tasks/{id}/children", get(task_children))
+        .route("/schedules", get(list_schedules).post(create_schedule))
+        .route(
+            "/schedules/{id}",
+            axum::routing::patch(update_schedule).delete(delete_schedule),
+        )
 }
 
 #[utoipa::path(get, path = "/api/health", tag = "system", responses((status = 200, body = HealthResponse), (status = 401, body = crate::error::ErrorBody)))]
@@ -417,6 +423,7 @@ pub async fn create_task(
         kind,
         payload: payload.payload,
         priority: payload.priority,
+        schedule_id: None,
     };
     let task = state
         .runtime
@@ -714,4 +721,116 @@ pub async fn get_resource(
         bytes,
     )
         .into_response())
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/schedules",
+    tag = "schedule",
+    responses(
+        (status = 200, body = SchedulePage),
+        (status = 401, body = crate::error::ErrorBody)
+    )
+)]
+pub async fn list_schedules(State(state): State<AppState>) -> Result<Json<SchedulePage>, ApiError> {
+    let rows = state.runtime.schedules.list().await?;
+    let total = i64::try_from(rows.len()).unwrap_or(i64::MAX);
+
+    Ok(Json(SchedulePage {
+        total,
+        items: rows.into_iter().map(ScheduleDto::from_schedule).collect(),
+    }))
+}
+
+/// 登记一条定时任务. 表达式与时区在写入前验证, 非法取值返回 400.
+#[utoipa::path(
+    post,
+    path = "/api/schedules",
+    tag = "schedule",
+    request_body = CreateScheduleRequest,
+    responses(
+        (status = 201, body = ScheduleDto),
+        (status = 400, body = crate::error::ErrorBody),
+        (status = 401, body = crate::error::ErrorBody)
+    )
+)]
+pub async fn create_schedule(
+    State(state): State<AppState>,
+    Json(payload): Json<CreateScheduleRequest>,
+) -> Result<(StatusCode, Json<ScheduleDto>), ApiError> {
+    let kind = TaskKind::parse(&payload.kind).ok_or_else(|| ApiError::Invalid {
+        code: "invalid_task_kind",
+        message: format!("未知任务类型: {}", payload.kind),
+    })?;
+    let spec = ScheduleSpec {
+        kind,
+        payload: payload.payload,
+        cron: payload.cron,
+        timezone: payload.timezone,
+    };
+
+    let row = state.runtime.schedules.create(&spec).await?;
+
+    Ok((StatusCode::CREATED, Json(ScheduleDto::from_schedule(row))))
+}
+
+/// 启用或停用. 类型、载荷与表达式创建后不变, 需要变更时删除后重新登记.
+#[utoipa::path(
+    patch,
+    path = "/api/schedules/{id}",
+    tag = "schedule",
+    params(("id" = i64, Path, description = "定时任务标识")),
+    request_body = UpdateScheduleRequest,
+    responses(
+        (status = 200, body = ScheduleDto),
+        (status = 400, body = crate::error::ErrorBody),
+        (status = 404, body = crate::error::ErrorBody),
+        (status = 401, body = crate::error::ErrorBody)
+    )
+)]
+pub async fn update_schedule(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(payload): Json<UpdateScheduleRequest>,
+) -> Result<Json<ScheduleDto>, ApiError> {
+    if payload.enabled.is_none() {
+        return Err(ApiError::Invalid {
+            code: "empty_patch",
+            message: "没有要修改的字段".to_owned(),
+        });
+    }
+
+    let row = state
+        .runtime
+        .schedules
+        .update(
+            id,
+            &SchedulePatch {
+                enabled: payload.enabled,
+            },
+        )
+        .await?;
+
+    Ok(Json(ScheduleDto::from_schedule(row)))
+}
+
+/// 删除登记. 已派生的任务保留, 只是失去来源引用.
+#[utoipa::path(
+    delete,
+    path = "/api/schedules/{id}",
+    tag = "schedule",
+    params(("id" = i64, Path, description = "定时任务标识")),
+    responses(
+        (status = 204),
+        (status = 404, body = crate::error::ErrorBody),
+        (status = 401, body = crate::error::ErrorBody)
+    )
+)]
+pub async fn delete_schedule(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<StatusCode, ApiError> {
+    state.runtime.schedules.delete(id).await?;
+
+    Ok(StatusCode::NO_CONTENT)
 }

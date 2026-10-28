@@ -37,14 +37,15 @@ impl TaskRepository {
         let payload = serde_json::to_string(&spec.payload).unwrap_or_else(|_| "null".to_owned());
         let row = sqlx::query_as::<_, Task>(
             r#"
-            INSERT INTO task (kind, payload, status, priority, created_at)
-            VALUES (?1, ?2, 'queued', ?3, ?4)
+            INSERT INTO task (kind, payload, status, priority, schedule_id, created_at)
+            VALUES (?1, ?2, 'queued', ?3, ?4, ?5)
             RETURNING *
             "#,
         )
         .bind(spec.kind)
         .bind(payload)
         .bind(spec.priority)
+        .bind(spec.schedule_id)
         .bind(Utc::now())
         .fetch_one(self.database.write())
         .await?;

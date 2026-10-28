@@ -43,6 +43,10 @@ pub use state::{AppState, Runtime};
         routes::retry_task,
         routes::task_log,
         routes::task_children,
+        routes::list_schedules,
+        routes::create_schedule,
+        routes::update_schedule,
+        routes::delete_schedule,
     ),
     components(schemas(
         dto::MetadataDto,
@@ -62,6 +66,10 @@ pub use state::{AppState, Runtime};
         dto::SourceOption,
         dto::TaskLogEntry,
         dto::TaskLogPage,
+        dto::ScheduleDto,
+        dto::SchedulePage,
+        dto::CreateScheduleRequest,
+        dto::UpdateScheduleRequest,
         error::ErrorBody,
     ))
 )]
@@ -535,6 +543,107 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn schedule_lifecycle_round_trip() {
+        let (_dir, app) = app(None).await;
+
+        let (status, created) = call(
+            app.clone(),
+            Method::POST,
+            "/api/schedules",
+            Some(
+                r#"{"kind":"scrape","payload":{"number":"SSIS-001"},"cron":"0 3 * * *","timezone":"Asia/Shanghai"}"#,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(created["cron"], "0 3 * * *");
+        assert_eq!(created["timezone"], "Asia/Shanghai");
+        assert_eq!(created["enabled"], true);
+        assert!(created["next_fire_at"].is_string(), "下次触发时刻应可显示");
+        let id = created["id"].as_i64().expect("应带标识");
+
+        let (status, page) = call(app.clone(), Method::GET, "/api/schedules", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(page["total"], 1);
+
+        // 停用: 不再派生新任务.
+        let (status, updated) = call(
+            app.clone(),
+            Method::PATCH,
+            &format!("/api/schedules/{id}"),
+            Some(r#"{"enabled":false}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(updated["enabled"], false);
+
+        let (status, body) = call(
+            app.clone(),
+            Method::PATCH,
+            &format!("/api/schedules/{id}"),
+            Some("{}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["code"], "empty_patch");
+
+        let (status, _) = call(
+            app.clone(),
+            Method::DELETE,
+            &format!("/api/schedules/{id}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let (status, _) = call(
+            app.clone(),
+            Method::DELETE,
+            &format!("/api/schedules/{id}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn schedule_rejects_malformed_input() {
+        let (_dir, app) = app(None).await;
+
+        let (status, body) = call(
+            app.clone(),
+            Method::POST,
+            "/api/schedules",
+            Some(
+                r#"{"kind":"scrape","payload":{},"cron":"99 * * * *","timezone":"Asia/Shanghai"}"#,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["code"], "invalid_cron");
+
+        let (status, body) = call(
+            app.clone(),
+            Method::POST,
+            "/api/schedules",
+            Some(r#"{"kind":"scrape","payload":{},"cron":"0 3 * * *","timezone":"Mars/Phobos"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["code"], "invalid_timezone");
+
+        let (status, body) = call(
+            app.clone(),
+            Method::POST,
+            "/api/schedules",
+            Some(r#"{"kind":"bogus","payload":{},"cron":"0 3 * * *","timezone":"Asia/Shanghai"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["code"], "invalid_task_kind");
+    }
+
+    #[tokio::test]
     async fn filter_options_come_from_registry() {
         let (_dir, app) = app(None).await;
 
@@ -766,6 +875,8 @@ mod tests {
             "/api/tasks/{id}/retry",
             "/api/tasks/{id}/log",
             "/api/tasks/{id}/children",
+            "/api/schedules",
+            "/api/schedules/{id}",
         ] {
             assert!(paths.contains_key(expected), "缺少路径 {expected}");
         }

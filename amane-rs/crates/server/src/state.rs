@@ -3,8 +3,8 @@ use std::time::Duration;
 
 use amane_core::config::Settings;
 use amane_core::{
-    Database, DbError, MetadataRepository, ResourceRepository, TaskHandler, TaskRepository,
-    TaskRepositoryError, TaskService,
+    Database, DbError, MetadataRepository, ResourceRepository, ScheduleRepository, Scheduler,
+    TaskHandler, TaskRepository, TaskRepositoryError, TaskService,
 };
 use amane_crawlers::Registry;
 use amane_net::{Rate, RateLimiters, WebClient};
@@ -34,6 +34,9 @@ pub struct Runtime {
     pub resources: Arc<ResourceStore>,
     /// 来源登记表. 处理函数用它抓取, 筛选端点用它给出可选项.
     pub sources: Arc<Registry>,
+    /// 定时任务登记与调度器. 循环由进程入口启动.
+    pub schedules: ScheduleRepository,
+    pub scheduler: Arc<Scheduler>,
 }
 
 impl Runtime {
@@ -73,20 +76,24 @@ impl Runtime {
             metadata.clone(),
             Arc::clone(&resources),
         )];
-        let tasks = TaskService::new(
+        let tasks = Arc::new(TaskService::new(
             task_repository,
             handlers,
             settings.hot.concurrency as usize,
             settings.cold.data_dir.join("tasks"),
-        );
+        ));
+        let schedules = ScheduleRepository::new(database.clone());
+        let scheduler = Arc::new(Scheduler::new(schedules.clone(), Arc::clone(&tasks)));
 
         Ok(Self {
             settings,
             database,
             metadata,
-            tasks,
+            tasks: Arc::clone(&tasks),
             resources,
             sources,
+            schedules,
+            scheduler,
         })
     }
 }
