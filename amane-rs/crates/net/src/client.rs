@@ -151,16 +151,14 @@ impl WebClient {
         Ok((bytes.to_vec(), declared))
     }
 
-    /// 以 JSON 请求体发送并解析 JSON 响应.
-    pub async fn post_json(
-        &self,
-        url: &str,
-        body: &serde_json::Value,
-    ) -> Result<serde_json::Value, NetError> {
+    /// 以 JSON 请求体发送并取回响应文本.
+    ///
+    /// 返回文本而不是已解析的值: 调用方在解码失败时需要保留原文, 而客户端解析产生的错误只带说明.
+    pub async fn post_text(&self, url: &str, body: &serde_json::Value) -> Result<String, NetError> {
         let response = self.execute(url, Some(body)).await?;
         ensure_success(url, &response)?;
         response
-            .json::<serde_json::Value>()
+            .text()
             .await
             .map_err(|error| request_error(url, &error))
     }

@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use chrono::NaiveDate;
 use serde_json::{Value, json};
 
-use crate::{Capability, ScrapedMetadata, Source, SourceDescriptor, SourceError};
+use crate::{Capability, RawBody, ScrapedMetadata, Source, SourceDescriptor, SourceError};
 
 /// DMM 数字版的主机名. 装配限速覆盖与构造端点都取这里.
 pub const HOST: &str = "api.video.dmm.co.jp";
@@ -96,11 +96,12 @@ impl Source for DmmSource {
             "query": QUERY,
         });
 
-        let response = self
+        let body = self
             .client
-            .post_json(ENDPOINT, &payload)
+            .post_text(ENDPOINT, &payload)
             .await
             .map_err(transport_error)?;
+        let response = decode_body(&body)?;
 
         parse_digital(&response, number)
     }
@@ -120,14 +121,50 @@ fn transport_error(error: NetError) -> SourceError {
     }
 }
 
-/// 解析 GraphQL 响应. 响应里没有内容时视为未收录.
+/// 解析响应体. 不是 JSON 时连同原文一起判解析失败: 维护页与拦截页走这条路径.
+fn decode_body(body: &str) -> Result<Value, SourceError> {
+    serde_json::from_str(body).map_err(|error| {
+        SourceError::parse(
+            ID,
+            format!("响应不是 JSON: {error}"),
+            RawBody {
+                content: body.to_owned(),
+                extension: "txt",
+            },
+        )
+    })
+}
+
+fn parse_failure(message: &str, response: &Value) -> SourceError {
+    SourceError::parse(
+        ID,
+        message.to_owned(),
+        RawBody {
+            content: response.to_string(),
+            extension: "json",
+        },
+    )
+}
+
+/// 解析 GraphQL 响应.
+///
+/// 三种结论分开: 没有可识别的结构视为解析失败并保留原文, `ppvContent` 为 null 视为未收录,
+/// 其余按字段缺失处理.
 fn parse_digital(response: &Value, number: &MediaNumber) -> Result<ScrapedMetadata, SourceError> {
-    let content = &response["data"]["ppvContent"];
+    let data = &response["data"];
+    if !data.is_object() {
+        return Err(parse_failure("响应缺少 data 对象", response));
+    }
+
+    let content = &data["ppvContent"];
     if content.is_null() {
         return Err(SourceError::NotFound {
             id: ID,
             number: number.as_str().to_owned(),
         });
+    }
+    if !content.is_object() {
+        return Err(parse_failure("ppvContent 不是对象", response));
     }
 
     let duration = content["duration"].as_i64().unwrap_or_default();
@@ -177,7 +214,7 @@ mod tests {
     use amane_core::MediaNumber;
     use serde_json::json;
 
-    use super::{content_id, parse_digital};
+    use super::{content_id, decode_body, parse_digital};
 
     #[test]
     fn maps_number_to_content_id() {
@@ -254,6 +291,55 @@ mod tests {
         let result = parse_digital(&response, &number);
 
         assert!(matches!(result, Err(super::SourceError::NotFound { .. })));
+    }
+
+    #[test]
+    fn non_json_body_keeps_raw() {
+        let body = "<html><body>维护中</body></html>";
+
+        let error = decode_body(body).expect_err("非 JSON 应判解析失败");
+
+        match &error {
+            super::SourceError::Parse { message, raw, .. } => {
+                assert!(message.contains("JSON"), "说明应指出期望的格式: {message}");
+                assert_eq!(raw.content, body, "应保留完整原文");
+                assert_eq!(raw.extension, "txt");
+            }
+            other => panic!("应判解析失败, 实际 {other:?}"),
+        }
+        assert!(
+            !error.to_string().contains("维护中"),
+            "错误说明不应携带原文, 实际 {error}"
+        );
+    }
+
+    #[test]
+    fn structural_anomaly_keeps_raw_response() {
+        let number = MediaNumber::parse("SSIS-001").expect("应解析成功");
+        let cases = [
+            (json!({ "errors": [{ "message": "维护中" }] }), "data"),
+            (json!({ "data": { "ppvContent": "维护中" } }), "ppvContent"),
+        ];
+
+        for (response, missing) in cases {
+            let error = parse_digital(&response, &number).expect_err("结构不符应判解析失败");
+
+            match &error {
+                super::SourceError::Parse { message, raw, .. } => {
+                    assert!(
+                        message.contains(missing),
+                        "说明应指出缺的是什么, 实际 {message}"
+                    );
+                    assert_eq!(raw.content, response.to_string(), "应保留完整原文");
+                    assert_eq!(raw.extension, "json");
+                }
+                other => panic!("应判解析失败, 实际 {other:?}"),
+            }
+            assert!(
+                !error.to_string().contains("维护中"),
+                "错误说明不应携带原文, 实际 {error}"
+            );
+        }
     }
 
     #[test]

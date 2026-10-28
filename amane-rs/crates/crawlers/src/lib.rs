@@ -58,14 +58,46 @@ pub struct ScrapedMetadata {
     pub poster_url: Option<String>,
 }
 
+/// 上游返回的原文.
+///
+/// `extension` 决定留存时的文件名后缀, 让原文能直接被对应的工具打开.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawBody {
+    pub content: String,
+    pub extension: &'static str,
+}
+
 #[derive(Debug, Error)]
 pub enum SourceError {
     #[error("来源 {id} 未收录番号 {number}")]
     NotFound { id: &'static str, number: String },
     #[error("来源 {id} 请求失败: {message}")]
     Transport { id: &'static str, message: String },
+    /// 取得了响应, 但其中没有可识别的结构.
+    ///
+    /// 与 [`SourceError::NotFound`] 的区别: 未收录是已经读懂的答复, 这里是没有可识别的结构.
+    /// 后者通常意味着站点改版或被拦截, 需要检查原文才能定位.
     #[error("来源 {id} 返回的内容无法解析: {message}")]
-    Parse { id: &'static str, message: String },
+    Parse {
+        id: &'static str,
+        message: String,
+        raw: RawBody,
+    },
+}
+
+impl SourceError {
+    /// 没有可识别的结构, 连同原文一并返回.
+    pub fn parse(id: &'static str, message: String, raw: RawBody) -> Self {
+        Self::Parse { id, message, raw }
+    }
+
+    /// 需要留存的上游原文. 只有解析失败携带.
+    pub fn raw(&self) -> Option<&RawBody> {
+        match self {
+            Self::Parse { raw, .. } => Some(raw),
+            _ => None,
+        }
+    }
 }
 
 /// 一个来源.

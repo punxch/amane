@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use chrono::NaiveDate;
 use scraper::{Html, Selector};
 
-use crate::{Capability, ScrapedMetadata, Source, SourceDescriptor, SourceError};
+use crate::{Capability, RawBody, ScrapedMetadata, Source, SourceDescriptor, SourceError};
 
 pub const HOST: &str = "javdb.com";
 
@@ -41,13 +41,7 @@ impl Source for JavdbSource {
             .await
             .map_err(transport_error)?;
 
-        let Some(path) = first_result_path(&search) else {
-            tracing::warn!(number = %number, bytes = search.len(), "javdb 搜索结果为空");
-            return Err(SourceError::NotFound {
-                id: ID,
-                number: number.as_str().to_owned(),
-            });
-        };
+        let path = first_result_path(&search, number)?;
 
         let detail_url = format!("https://{HOST}{path}");
         let detail = self
@@ -86,16 +80,41 @@ fn urlencode(value: &str) -> String {
         .collect()
 }
 
-/// 搜索结果里第一个影片链接.
-fn first_result_path(html: &str) -> Option<String> {
+/// 搜索结果里第一个影片的路径.
+///
+/// 站点给出「暂无内容」时视为未收录; 没有结果列表时视为解析失败, 原文随错误返回.
+fn first_result_path(html: &str, number: &MediaNumber) -> Result<String, SourceError> {
     let document = Html::parse_document(html);
     let selector = Selector::parse(r#"a.box[href^="/v/"]"#).expect("固定选择器");
 
-    document
+    if let Some(path) = document
         .select(&selector)
         .next()
         .and_then(|element| element.value().attr("href"))
-        .map(str::to_owned)
+    {
+        return Ok(path.to_owned());
+    }
+
+    let empty_marker = Selector::parse(".empty-message").expect("固定选择器");
+    if document.select(&empty_marker).next().is_some() {
+        return Err(SourceError::NotFound {
+            id: ID,
+            number: number.as_str().to_owned(),
+        });
+    }
+
+    Err(parse_failure("搜索结果页没有结果列表", html))
+}
+
+fn parse_failure(message: &str, html: &str) -> SourceError {
+    SourceError::parse(
+        ID,
+        message.to_owned(),
+        RawBody {
+            content: html.to_owned(),
+            extension: "html",
+        },
+    )
 }
 
 /// 详情页面板: 每个 `div.panel-block` 是「标签 + 值」.
@@ -123,6 +142,10 @@ fn parse_detail(html: &str, number: &MediaNumber) -> Result<ScrapedMetadata, Sou
             }),
         ..ScrapedMetadata::default()
     };
+
+    if document.select(&block_selector).next().is_none() {
+        return Err(parse_failure("详情页没有信息面板", html));
+    }
 
     let mut matched_number = false;
     for block in document.select(&block_selector) {
@@ -212,6 +235,13 @@ mod tests {
         </div>
     "#;
 
+    /// 空结果页: 没有结果链接, 但站点明确给出提示.
+    const EMPTY_SEARCH: &str =
+        r#"<div class="movie-list-empty"><div class="empty-message">暫無內容</div></div>"#;
+
+    /// 既没有结果列表也没有提示, 通常是拦截页或改版.
+    const CHALLENGE: &str = r#"<html><body><h1>Just a moment...</h1></body></html>"#;
+
     const DETAIL: &str = r#"
         <div class="video-detail">
           <h2 class="title is-4">
@@ -239,8 +269,39 @@ mod tests {
 
     #[test]
     fn takes_first_result_link() {
-        assert_eq!(first_result_path(SEARCH).as_deref(), Some("/v/ZY5eq"));
-        assert_eq!(first_result_path("<html></html>"), None);
+        let number = MediaNumber::parse("SSIS-001").expect("应解析成功");
+
+        assert_eq!(
+            first_result_path(SEARCH, &number).expect("应取到链接"),
+            "/v/ZY5eq"
+        );
+    }
+
+    #[test]
+    fn empty_result_page_is_not_found() {
+        let number = MediaNumber::parse("ZZZ-999").expect("应解析成功");
+
+        let result = first_result_path(EMPTY_SEARCH, &number);
+
+        assert!(
+            matches!(result, Err(super::SourceError::NotFound { .. })),
+            "站点明确表示暂无内容时应报未收录"
+        );
+    }
+
+    #[test]
+    fn unrecognized_search_page_keeps_raw() {
+        let number = MediaNumber::parse("ZZZ-999").expect("应解析成功");
+
+        let error = first_result_path(CHALLENGE, &number).expect_err("应判解析失败");
+
+        match &error {
+            super::SourceError::Parse { raw, .. } => {
+                assert_eq!(raw.content, CHALLENGE, "应保留完整原文");
+                assert_eq!(raw.extension, "html");
+            }
+            other => panic!("应判解析失败, 实际 {other:?}"),
+        }
     }
 
     #[test]
@@ -282,6 +343,22 @@ mod tests {
         assert_eq!(scraped.title.as_deref(), Some("English title"));
         assert_eq!(scraped.runtime_minutes, Some(150));
         assert_eq!(scraped.actors, vec!["葵つかさ"]);
+    }
+
+    #[test]
+    fn detail_without_panels_keeps_raw() {
+        let number = MediaNumber::parse("SSIS-001").expect("应解析成功");
+
+        let error = parse_detail(CHALLENGE, &number).expect_err("没有信息面板应判解析失败");
+
+        match &error {
+            super::SourceError::Parse { message, raw, .. } => {
+                assert!(message.contains("信息面板"), "说明应指出缺什么: {message}");
+                assert_eq!(raw.content, CHALLENGE, "应保留完整原文");
+                assert_eq!(raw.extension, "html");
+            }
+            other => panic!("应判解析失败, 实际 {other:?}"),
+        }
     }
 
     #[test]

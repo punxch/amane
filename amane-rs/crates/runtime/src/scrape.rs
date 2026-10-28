@@ -4,12 +4,12 @@ use std::sync::Arc;
 
 use amane_core::{
     LockableField, MediaNumber, MetadataInput, MetadataRepository, ScrapeWrite, TaskContext,
-    TaskError, TaskHandler, TaskKind, TaskOutcome,
+    TaskError, TaskHandler, TaskKind, TaskLogger, TaskOutcome,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use amane_crawlers::{Capability, Registry, ScrapedMetadata, aggregate};
+use amane_crawlers::{Capability, Registry, ScrapedMetadata, SourceError, aggregate};
 
 use crate::resource::ResourceStore;
 
@@ -21,7 +21,7 @@ struct ScrapePayload {
 
 /// 把刮削任务接到来源登记表上.
 ///
-/// 首个切片只做「首个成功来源获胜」: 多源按字段合并属于聚合切片, 这里不提前实现.
+/// 来源并行请求, 结果按登记顺序聚合: 标量取首个非空, 列表整份取首个非空来源.
 pub struct ScrapeHandler {
     sources: Arc<Registry>,
     metadata: MetadataRepository,
@@ -90,6 +90,7 @@ impl TaskHandler for ScrapeHandler {
                         .logger
                         .warn(format!("来源 {id} 失败: {error}"))
                         .await;
+                    keep_raw(&context.logger, id, &error).await;
                 }
             }
         }
@@ -177,6 +178,26 @@ impl TaskHandler for ScrapeHandler {
     }
 }
 
+/// 解析失败时把上游原文写入任务目录.
+///
+/// 站点改版或被拦截时, 一行失败说明不足以定位, 需要检查原文. 留存位置的选择见
+/// `docs/dev/tasks.md`.
+async fn keep_raw(logger: &TaskLogger, id: &str, error: &SourceError) {
+    let Some(raw) = error.raw() else {
+        return;
+    };
+
+    let name = format!("{id}.raw.{}", raw.extension);
+    match logger.write_file(&name, &raw.content).await {
+        Ok(()) => logger.info(format!("来源 {id} 的原文已留存: {name}")).await,
+        Err(cause) => {
+            logger
+                .warn(format!("来源 {id} 的原文留存失败: {cause}"))
+                .await
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -190,13 +211,21 @@ mod tests {
 
     use super::ScrapeHandler;
     use amane_crawlers::{
-        Capability, Registry, ScrapedMetadata, Source, SourceDescriptor, SourceError,
+        Capability, RawBody, Registry, ScrapedMetadata, Source, SourceDescriptor, SourceError,
     };
 
     struct StubSource {
         descriptor: SourceDescriptor,
-        title: Option<&'static str>,
-        fails: bool,
+        outcome: StubOutcome,
+    }
+
+    enum StubOutcome {
+        Hit(Option<&'static str>),
+        Transport,
+        Parse {
+            raw: &'static str,
+            extension: &'static str,
+        },
     }
 
     #[async_trait]
@@ -206,20 +235,28 @@ mod tests {
         }
 
         async fn fetch(&self, number: &MediaNumber) -> Result<ScrapedMetadata, SourceError> {
-            if self.fails {
-                return Err(SourceError::Transport {
+            match self.outcome {
+                StubOutcome::Hit(title) => Ok(ScrapedMetadata {
+                    title: title.map(|title| format!("{title} {number}")),
+                    ..ScrapedMetadata::default()
+                }),
+                StubOutcome::Transport => Err(SourceError::Transport {
                     id: self.descriptor.id,
                     message: "连接超时".to_owned(),
-                });
+                }),
+                StubOutcome::Parse { raw, extension } => Err(SourceError::Parse {
+                    id: self.descriptor.id,
+                    message: "没有可识别的结构".to_owned(),
+                    raw: RawBody {
+                        content: raw.to_owned(),
+                        extension,
+                    },
+                }),
             }
-            Ok(ScrapedMetadata {
-                title: self.title.map(|title| format!("{title} {number}")),
-                ..ScrapedMetadata::default()
-            })
         }
     }
 
-    fn source(id: &'static str, title: Option<&'static str>, fails: bool) -> Box<dyn Source> {
+    fn stub(id: &'static str, outcome: StubOutcome) -> Box<dyn Source> {
         Box::new(StubSource {
             descriptor: SourceDescriptor {
                 id,
@@ -227,9 +264,23 @@ mod tests {
                 base_url: "https://example.invalid",
                 capabilities: &[Capability::Metadata],
             },
-            title,
-            fails,
+            outcome,
         })
+    }
+
+    fn source(id: &'static str, title: Option<&'static str>, fails: bool) -> Box<dyn Source> {
+        stub(
+            id,
+            if fails {
+                StubOutcome::Transport
+            } else {
+                StubOutcome::Hit(title)
+            },
+        )
+    }
+
+    fn unparsable(id: &'static str, raw: &'static str, extension: &'static str) -> Box<dyn Source> {
+        stub(id, StubOutcome::Parse { raw, extension })
     }
 
     struct Fixture {
@@ -351,6 +402,59 @@ mod tests {
             stored.title.as_deref(),
             Some("人工标题"),
             "锁定字段不应被刮削覆盖"
+        );
+    }
+
+    #[tokio::test]
+    async fn keeps_raw_of_unparsable_source() {
+        let fixture = fixture(vec![
+            unparsable("broken", "<html>拦截页</html>", "html"),
+            source("working", Some("命中"), false),
+        ])
+        .await;
+
+        run(
+            &fixture.handler,
+            fixture.dir.path(),
+            serde_json::json!({ "number": "ABC-123" }),
+        )
+        .await
+        .expect("单个来源解析失败不应让任务失败");
+
+        let path = fixture.dir.path().join("task-1/broken.raw.html");
+        let content = tokio::fs::read_to_string(&path).await.expect("应留存原文");
+        assert_eq!(content, "<html>拦截页</html>");
+
+        let lines = TaskLogger::read(fixture.dir.path(), 1)
+            .await
+            .expect("应读到日志");
+        let texts: Vec<&str> = lines.iter().map(|line| line.message.as_str()).collect();
+        assert!(
+            texts.iter().any(|text| text.contains("broken.raw.html")),
+            "日志应指出原文位置, 实际 {texts:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn keeps_raw_when_every_source_is_unparsable() {
+        let fixture = fixture(vec![unparsable("broken", "{\"errors\":[]}", "json")]).await;
+
+        let error = run(
+            &fixture.handler,
+            fixture.dir.path(),
+            serde_json::json!({ "number": "ABC-123" }),
+        )
+        .await
+        .expect_err("全部解析失败时任务应失败");
+
+        assert!(error.to_string().contains("没有来源返回结果"));
+        assert!(
+            !error.to_string().contains("errors"),
+            "失败说明不应携带原文, 实际 {error}"
+        );
+        assert!(
+            fixture.dir.path().join("task-1/broken.raw.json").exists(),
+            "没有写入番号条目时也要留存原文"
         );
     }
 

@@ -14,11 +14,15 @@ pub struct TaskLogLine {
     pub message: String,
 }
 
+/// 日志文件名. 同目录下的其它文件不得占用它.
+const LOG_FILE: &str = "log.jsonl";
+
 /// 单个任务的日志写入器.
 ///
 /// 每个任务一个目录, 逐行追加 JSON, 进程中断后已写入的行仍然可读.
 #[derive(Debug, Clone)]
 pub struct TaskLogger {
+    directory: PathBuf,
     path: PathBuf,
 }
 
@@ -29,7 +33,8 @@ impl TaskLogger {
         tokio::fs::create_dir_all(&directory).await?;
 
         Ok(Self {
-            path: directory.join("log.jsonl"),
+            path: directory.join(LOG_FILE),
+            directory,
         })
     }
 
@@ -82,9 +87,30 @@ impl TaskLogger {
         }
     }
 
+    /// 把一段原始内容写入该任务的日志目录.
+    ///
+    /// `name` 只能是单层文件名, 且不得占用日志本身: 原文来自外部站点,
+    /// 文件名一旦包含路径分隔符, 写入位置就会超出任务目录.
+    pub async fn write_file(&self, name: &str, content: &str) -> io::Result<()> {
+        let plain = !name.is_empty()
+            && name != "."
+            && name != ".."
+            && name != LOG_FILE
+            && !name.contains('/')
+            && !name.contains('\\');
+        if !plain {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("文件名不合法: {name}"),
+            ));
+        }
+
+        tokio::fs::write(self.directory.join(name), content).await
+    }
+
     /// 读取该任务已写入的全部日志行; 目录不存在时返回空.
     pub async fn read(root: &Path, task_id: i64) -> io::Result<Vec<TaskLogLine>> {
-        let path = Self::directory(root, task_id).join("log.jsonl");
+        let path = Self::directory(root, task_id).join(LOG_FILE);
         let content = match tokio::fs::read_to_string(&path).await {
             Ok(content) => content,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -122,6 +148,38 @@ mod tests {
         let messages: Vec<&str> = lines.iter().map(|line| line.message.as_str()).collect();
         assert_eq!(messages, ["开始", "来源超时", "结束"]);
         assert_eq!(lines[1].level, "warn");
+    }
+
+    #[tokio::test]
+    async fn writes_raw_beside_log() {
+        let dir = tempfile::tempdir().expect("应创建临时目录");
+        let logger = TaskLogger::open(dir.path(), 3).await.expect("应创建日志");
+
+        logger
+            .write_file("javdb.raw.html", "<html>原文</html>")
+            .await
+            .expect("应写入成功");
+
+        let path = TaskLogger::directory(dir.path(), 3).join("javdb.raw.html");
+        let content = tokio::fs::read_to_string(&path).await.expect("应读到原文");
+        assert_eq!(content, "<html>原文</html>");
+    }
+
+    #[tokio::test]
+    async fn rejects_names_that_escape_the_task_directory() {
+        let dir = tempfile::tempdir().expect("应创建临时目录");
+        let logger = TaskLogger::open(dir.path(), 4).await.expect("应创建日志");
+
+        for name in ["../escape.txt", "nested/raw.txt", "", ".", "log.jsonl"] {
+            assert!(
+                logger.write_file(name, "x").await.is_err(),
+                "{name} 不应被接受"
+            );
+        }
+        assert!(
+            !dir.path().join("escape.txt").exists(),
+            "被拒绝的文件名不应出现在目录外"
+        );
     }
 
     #[tokio::test]
