@@ -1,14 +1,13 @@
 use std::path::PathBuf;
 
 use amane_core::config::Settings;
-use amane_server::{AppState, Runtime, build_router};
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
 #[command(name = "amane-server", about = "Amane 影片元数据服务")]
 struct Args {
-    /// 监听地址, 覆盖配置文件.
+    /// 监听地址, 覆盖配置文件. 端口填 0 表示由系统分配.
     #[arg(long)]
     bind: Option<String>,
     /// 数据目录, 覆盖配置文件.
@@ -48,29 +47,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         settings.cold.api_token = args.token;
     }
 
-    let runtime = Runtime::boot(settings).await?;
-    let bind = runtime.settings().cold.bind.clone();
-    let listener = tokio::net::TcpListener::bind(&bind).await?;
-    let address = listener.local_addr()?;
-    tracing::info!(%address, "amane-server 已启动");
-
-    let state = AppState::new(runtime);
-    let worker = state.runtime.tasks.start();
-    let scheduler_loop = state.runtime.scheduler.clone().spawn();
-
-    axum::serve(listener, build_router(state.clone()))
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
-
-    // 出队循环经优雅停机结束; 调度循环在此结束. 登记与任务都已持久化, 重启后按基准时刻继续.
-    state.runtime.tasks.shutdown();
-    let _ = worker.await;
-    scheduler_loop.abort();
+    let state = amane_server::boot(settings).await?;
+    amane_server::serve(state).await?;
 
     Ok(())
-}
-
-async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
-    tracing::info!("收到中断信号, 正在停止");
 }

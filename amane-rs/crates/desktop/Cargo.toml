@@ -1,0 +1,16 @@
+[package]
+name = "amane-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[build-dependencies]
+tauri-build = "2"
+
+[dependencies]
+rand.workspace = true
+amane-server.workspace = true
+amane-core.workspace = true
+tauri = { version = "2", features = [] }
+tokio.workspace = true

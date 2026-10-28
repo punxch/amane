@@ -50,6 +50,11 @@ generate: openapi
     pnpm --dir ui install
     pnpm --dir ui run generate
 
+# 构建前端产物 (服务端静态回退与桌面壳使用)
+build-ui: generate
+    pnpm --dir ui install
+    pnpm --dir ui run build
+
 # 构建服务端与前端产物
 build: generate
     cargo build --release -p amane-server

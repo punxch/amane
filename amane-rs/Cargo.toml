@@ -1,9 +1,7 @@
 [workspace]
 resolver = "3"
-# 桌面壳 (crates/desktop) 在 M3 加入: 它依赖 Tauri, 会把整条 BoringSSL 与 WebView 构建链
-# 拉进默认构建, 首个切片先只验证 HTTP 契约与业务内核.
-members = ["crates/core", "crates/crawlers", "crates/runtime", "crates/server", "crates/net"]
-default-members = ["crates/core", "crates/crawlers", "crates/runtime", "crates/server", "crates/net"]
+members = ["crates/core", "crates/crawlers", "crates/runtime", "crates/server", "crates/net", "crates/desktop"]
+default-members = ["crates/core", "crates/crawlers", "crates/runtime", "crates/server", "crates/net", "crates/desktop"]
 
 [workspace.package]
 version = "0.1.0"
@@ -17,6 +15,8 @@ amane-core = { path = "crates/core" }
 amane-crawlers = { path = "crates/crawlers" }
 amane-runtime = { path = "crates/runtime" }
 amane-net = { path = "crates/net" }
+amane-server = { path = "crates/server" }
+rand = "0.9"
 
 # 序列化与校验
 serde = { version = "1", features = ["derive"] }

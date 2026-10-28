@@ -11,6 +11,7 @@
 | `crates/net/` | 出站 HTTP: 浏览器指纹、按 host 限速、被拒后轮换 | 不感知站点语义; 限速器先于客户端构造, 由类型签名保证 |
 | `crates/runtime/` | 任务处理函数 (刮削、资源物化) | 依赖 core、crawlers 与 net; 只做编排与写库, 不实现解析与抓取 |
 | `crates/server/` | axum 路由、DTO、错误映射、OpenAPI | 不持有业务规则; 领域类型到 DTO 的转换只在此层 |
+| `crates/desktop/` | Tauri 外壳 | 只做装配: 生成令牌、绑定端口 0、打开窗口指向内嵌服务 |
 | `ui/` | Vue 3 前端 | 只经 HTTP 契约访问后端, 不读取本机文件或数据库 |
 
 领域类型与传输 DTO 分开 (`amane_core::Metadata` 与 `server::dto::MetadataDto`): 新增接口字段不会波及内核, 内核对宿主形态无感知。

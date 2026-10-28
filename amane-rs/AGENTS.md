@@ -20,11 +20,12 @@ Amane 的 Rust 实现, 逐步替代 `src/amane/` 的 Python 实现. 覆盖范围
 | `crates/crawlers/` | 来源契约与登记表. 站点实现编译进二进制, 无插件宿主 |
 | `crates/net/` | 出站 HTTP: 指纹轮换与按 host 限速. 不感知站点语义 |
 | `crates/runtime/` | 任务处理函数: 把来源与持久化接起来. 跨 crate 的编排放这里 |
+| `crates/desktop/` | Tauri 外壳: 启动内嵌服务, 分配端口与令牌 |
 | `crates/server/` | axum 适配: 路由、DTO、错误映射、OpenAPI |
 | `ui/` | Vue 3 前端. 只经 HTTP 契约访问后端 |
 | `migrations/` | sqlx 迁移 |
 
-`crates/desktop/` 在接入 Tauri 的切片中加入, 加入前不进入工作区成员.
+`crates/desktop/` 是 Tauri 外壳, 构建命令见 [docs/dev/build.md](docs/dev/build.md).
 
 ## 命令
 

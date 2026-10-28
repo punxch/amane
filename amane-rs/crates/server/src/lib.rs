@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use amane_core::config::Settings;
 use axum::Router;
 use axum::extract::{Request, State};
 use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
@@ -104,7 +105,15 @@ pub fn build_router_with_ui(state: AppState, ui: Option<PathBuf>) -> Router {
 
     match ui {
         Some(dir) => mount_ui(router, dir),
-        None => router,
+        // 前端产物缺失时给出可读提示, 而不是白屏或纯文本 404.
+        None => router.fallback(|| async {
+            (
+                StatusCode::OK,
+                [("content-type", "text/html; charset=utf-8")],
+                "<!doctype html><meta charset=\"utf-8\"><title>Amane</title>                 <p>前端产物不存在。在 amane-rs 目录运行 <code>just rs build-ui</code> 后重启。</p>",
+            )
+                .into_response()
+        }),
     }
 }
 
@@ -155,6 +164,56 @@ fn mime_for(path: &str) -> &'static str {
         Some("woff2") => "font/woff2",
         _ => "application/octet-stream",
     }
+}
+
+/// 启动运行时与任务调度所需的全部状态.
+pub async fn boot(settings: Settings) -> std::io::Result<AppState> {
+    let runtime = Runtime::boot(settings)
+        .await
+        .map_err(std::io::Error::other)?;
+    Ok(AppState::new(runtime))
+}
+
+/// 绑定监听地址并启动服务循环, 立即返回实际监听的地址.
+///
+/// 端口填 `0` 表示由系统分配; 桌面壳据此避免端口冲突. 调用方持有返回的句柄,
+/// 进程退出即停止服务; 登记与任务都已持久化, 重启后按基准时刻继续.
+pub async fn start(
+    state: AppState,
+) -> std::io::Result<(std::net::SocketAddr, tokio::task::JoinHandle<()>)> {
+    let bind = state.runtime.settings().cold.bind.clone();
+    let listener = tokio::net::TcpListener::bind(&bind).await?;
+    let address = listener.local_addr()?;
+    tracing::info!(%address, "amane-server 已启动");
+
+    let worker = state.runtime.tasks.start();
+    let scheduler_loop = state.runtime.scheduler.clone().spawn();
+    let router = build_router(state.clone());
+
+    let handle = tokio::spawn(async move {
+        let _ = axum::serve(listener, router)
+            .with_graceful_shutdown(shutdown_signal())
+            .await;
+
+        state.runtime.tasks.shutdown();
+        let _ = worker.await;
+        drop(scheduler_loop);
+    });
+
+    Ok((address, handle))
+}
+
+/// 运行到停机信号, 命令行入口使用.
+pub async fn serve(state: AppState) -> std::io::Result<std::net::SocketAddr> {
+    let (address, handle) = start(state).await?;
+    let _ = handle.await;
+
+    Ok(address)
+}
+
+async fn shutdown_signal() {
+    let _ = tokio::signal::ctrl_c().await;
+    tracing::info!("收到中断信号, 正在停止");
 }
 
 /// 已在构建产物中附带前端时, 由同一端口提供静态文件.
@@ -775,6 +834,50 @@ mod tests {
                 .unwrap_or_default()
                 .contains("nowhere")
         );
+    }
+
+    #[tokio::test]
+    async fn start_with_port_zero_picks_an_ephemeral_port() {
+        let state = {
+            let dir = tempfile::tempdir().expect("应创建临时目录");
+            let settings = Settings {
+                cold: ColdSettings {
+                    data_dir: dir.path().to_path_buf(),
+                    bind: "127.0.0.1:0".to_owned(),
+                    ..ColdSettings::default()
+                },
+                ..Settings::default()
+            };
+            // 目录句柄要活到断言结束, 先拿地址再释放.
+            let state = crate::boot(settings).await.expect("应启动");
+            let (address, _handle) = crate::start(state.clone()).await.expect("应绑定端口");
+
+            assert!(address.port() > 0, "端口 0 应被系统替换为实际端口");
+            assert!(address.ip().is_loopback());
+            address
+        };
+        let _ = state;
+    }
+
+    #[tokio::test]
+    async fn missing_frontend_shows_readable_hint() {
+        let (_dir, app) = app(None).await;
+
+        let response = app
+            .oneshot(Request::get("/").body(Body::empty()).expect("应构造请求"))
+            .await
+            .expect("应得到响应");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("应读取响应体");
+        let text = String::from_utf8_lossy(&body);
+        assert!(
+            text.contains("前端产物不存在"),
+            "提示应说明缺什么, 实际 {text}"
+        );
+        assert!(text.contains("build-ui"), "提示应给出补救命令");
     }
 
     #[tokio::test]

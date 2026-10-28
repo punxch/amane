@@ -20,7 +20,7 @@ use crate::dto::{
     TaskDto, TaskListQuery, TaskLogEntry, TaskLogPage, TaskPage, UpdateMetadataRequest,
     UpdateScheduleRequest,
 };
-use crate::error::ApiError;
+use crate::error::{ApiError, ErrorBody};
 use crate::state::AppState;
 
 const DEFAULT_LIMIT: u32 = 50;
@@ -51,6 +51,15 @@ pub fn router() -> Router<AppState> {
         .route("/tasks/{id}/retry", post(retry_task))
         .route("/tasks/{id}/log", get(task_log))
         .route("/tasks/{id}/children", get(task_children))
+        .fallback(|| async {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorBody {
+                    code: "not_found".to_owned(),
+                    message: "接口不存在".to_owned(),
+                }),
+            )
+        })
         .route("/schedules", get(list_schedules).post(create_schedule))
         .route(
             "/schedules/{id}",

@@ -44,12 +44,31 @@ export class ApiError extends Error {
   }
 }
 
+const TOKEN_KEY = "amane_token";
+
+/**
+ * 捕获桌面外壳注入的本次进程令牌.
+ *
+ * 外壳以 `/?token=…` 打开界面; 令牌只存进本次会话, 不落盘.
+ */
+export function captureToken(): void {
+  const token = new URLSearchParams(window.location.search).get("token");
+  if (token !== null) {
+    window.sessionStorage.setItem(TOKEN_KEY, token);
+  }
+}
+
+function authHeaders(): Record<string, string> {
+  const token = window.sessionStorage.getItem(TOKEN_KEY);
+  return token === null ? {} : { authorization: `Bearer ${token}` };
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
     response = await fetch(path, {
       ...init,
-      headers: { "content-type": "application/json", ...init?.headers },
+      headers: { "content-type": "application/json", ...authHeaders(), ...init?.headers },
     });
   } catch {
     // 网络层失败没有响应体, 单独给一个错误码, 界面据此提示后端不可用.
