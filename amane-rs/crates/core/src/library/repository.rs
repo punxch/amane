@@ -92,8 +92,11 @@ impl LibraryRepository {
         self.insert(&path).await
     }
 
-    /// 写入登记行. 路径须已校验与规范化; 端点请用 [`LibraryRepository::register`].
-    pub async fn insert(&self, path: &Path) -> Result<LibraryRoot, LibraryError> {
+    /// 写入登记行. 路径须已校验与规范化.
+    ///
+    /// 收窄到 crate 内: 跨 crate 的调用方只能走 [`LibraryRepository::register`],
+    /// 绕过校验的入口从类型上就不存在.
+    pub(crate) async fn insert(&self, path: &Path) -> Result<LibraryRoot, LibraryError> {
         let now = Utc::now();
         let row = sqlx::query_as::<_, LibraryRoot>(
             "INSERT INTO library_root (path, created_at) VALUES (?1, ?2) RETURNING *",

@@ -176,7 +176,10 @@ mod tests {
         // 库目录与数据库分开放, 扫描只应看到库里的内容.
         let library = dir.path().join("library");
         fs::create_dir_all(&library).expect("应创建库目录");
-        let root = libraries.insert(&library).await.expect("应登记成功");
+        let root = libraries
+            .register(library.to_str().expect("应为 UTF-8"))
+            .await
+            .expect("应登记成功");
         fs::write(library.join("film.mp4"), vec![0u8; 64]).expect("应写入媒体");
         fs::write(library.join("note.txt"), "说明").expect("应写入附属");
         fs::create_dir_all(library.join("empty")).expect("应创建空目录");
@@ -218,7 +221,10 @@ mod tests {
         let (dir, handler, libraries) = fixture().await;
         let library = dir.path().join("library");
         fs::create_dir_all(&library).expect("应创建库目录");
-        let root = libraries.insert(&library).await.expect("应登记成功");
+        let root = libraries
+            .register(library.to_str().expect("应为 UTF-8"))
+            .await
+            .expect("应登记成功");
         fs::write(library.join("old.mp4"), vec![0u8; 64]).expect("应写入媒体");
 
         run(
@@ -255,7 +261,10 @@ mod tests {
     #[tokio::test]
     async fn applies_blacklist_from_settings() {
         let (dir, _handler, libraries) = fixture().await;
-        let root = libraries.insert(dir.path()).await.expect("应登记成功");
+        let root = libraries
+            .register(dir.path().to_str().expect("应为 UTF-8"))
+            .await
+            .expect("应登记成功");
         fs::write(dir.path().join("ads-promo.mp4"), vec![0u8; 2048]).expect("应写入媒体");
 
         // 未配置黑名单: 大于阈值的文件是媒体.
@@ -316,8 +325,14 @@ mod tests {
     #[tokio::test]
     async fn missing_directory_fails_with_reason() {
         let (dir, handler, libraries) = fixture().await;
+        // 先建目录登记, 再删掉: 这个用例要的正是「登记时存在、扫描时已消失」.
         let gone = dir.path().join("gone");
-        let root = libraries.insert(&gone).await.expect("应登记成功");
+        fs::create_dir_all(&gone).expect("应创建目录");
+        let root = libraries
+            .register(gone.to_str().expect("应为 UTF-8"))
+            .await
+            .expect("应登记成功");
+        fs::remove_dir_all(&gone).expect("应删除目录");
 
         let result = run(
             &handler,

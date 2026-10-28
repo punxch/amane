@@ -226,7 +226,10 @@ mod tests {
             .await
             .expect("应打开数据库");
         let libraries = LibraryRepository::new(database.clone());
-        let root = libraries.insert(&library).await.expect("应登记成功");
+        let root = libraries
+            .register(library.to_str().expect("应为 UTF-8"))
+            .await
+            .expect("应登记成功");
         fs::write(library.join("ABC-123.mp4"), b"v").expect("应写入视频");
         fs::write(library.join("ABC-123.srt"), b"sub").expect("应写入字幕");
         libraries
@@ -281,7 +284,10 @@ mod tests {
             .await
             .expect("应打开数据库");
         let libraries = LibraryRepository::new(database.clone());
-        let root = libraries.insert(&library).await.expect("应登记成功");
+        let root = libraries
+            .register(library.to_str().expect("应为 UTF-8"))
+            .await
+            .expect("应登记成功");
         fs::write(library.join("ABC-123.mp4"), b"new").expect("应写入源");
         fs::write(library.join("ABC-123/ABC-123.mp4"), b"old").expect("应写入占用者");
         libraries
@@ -347,7 +353,10 @@ mod tests {
         let libraries = LibraryRepository::new(database.clone());
         let plans = OrganizeRepository::new(database.clone());
         let metadata = MetadataRepository::new(database);
-        let root = libraries.insert(&library).await.expect("应登记成功");
+        let root = libraries
+            .register(library.to_str().expect("应为 UTF-8"))
+            .await
+            .expect("应登记成功");
         fs::write(library.join("ABC-123.mp4"), b"v").expect("应写入视频");
         libraries
             .replace_files(
