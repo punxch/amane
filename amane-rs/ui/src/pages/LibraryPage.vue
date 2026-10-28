@@ -2,7 +2,7 @@
 import { onMounted, reactive, ref } from "vue";
 
 import {
-  ApiError,
+  describeError,
   api,
   type CleanupManifestDto,
   type LibraryDto,
@@ -65,15 +65,6 @@ function report(kind: "error" | "ok", text: string): void {
   notice.value = { kind, text };
 }
 
-function describe(error: unknown): string {
-  if (error instanceof ApiError) {
-    return error.code === "unreachable"
-      ? "无法连接后端服务，请确认服务已启动后重试。"
-      : error.message;
-  }
-  return "请求失败，请稍后重试。";
-}
-
 function countOf(library: LibraryDto, kind: string): number {
   const counts = library.counts;
   const key = kind as keyof typeof counts;
@@ -86,7 +77,7 @@ async function refresh(): Promise<void> {
   try {
     libraries.value = (await api.listLibraries()).items;
   } catch (error) {
-    failure.value = describe(error);
+    failure.value = describeError(error);
   } finally {
     loading.value = false;
   }
@@ -103,7 +94,7 @@ async function create(): Promise<void> {
     form.path = "";
     await refresh();
   } catch (error) {
-    report("error", describe(error));
+    report("error", describeError(error));
   }
 }
 
@@ -114,7 +105,7 @@ async function scan(library: LibraryDto): Promise<void> {
     report("ok", `扫描任务 #${task.id} 已提交，完成后刷新查看结果`);
     await refresh();
   } catch (error) {
-    report("error", describe(error));
+    report("error", describeError(error));
   } finally {
     scanning.value = null;
   }
@@ -129,7 +120,7 @@ async function remove(library: LibraryDto): Promise<void> {
     report("ok", "已移除登记；磁盘文件不受影响");
     await refresh();
   } catch (error) {
-    report("error", describe(error));
+    report("error", describeError(error));
   }
 }
 
@@ -146,7 +137,7 @@ async function toggleFiles(library: LibraryDto, kind: string | null): Promise<vo
   try {
     expandedFiles.value = await api.libraryFiles(library.id, kind);
   } catch (error) {
-    report("error", describe(error));
+    report("error", describeError(error));
     expanded.value = null;
   } finally {
     filesLoading.value = false;
@@ -165,7 +156,7 @@ async function loadPreview(library: LibraryDto): Promise<void> {
   try {
     preview.value = await api.organizePreview(library.id);
   } catch (error) {
-    report("error", describe(error));
+    report("error", describeError(error));
     previewLibrary.value = null;
   } finally {
     previewLoading.value = false;
@@ -193,7 +184,7 @@ async function execute(library: LibraryDto, action: string): Promise<void> {
     await loadPreview(library);
     await refresh();
   } catch (error) {
-    report("error", describe(error));
+    report("error", describeError(error));
   } finally {
     executing.value = false;
   }
@@ -224,7 +215,7 @@ async function loadCleanup(library: LibraryDto): Promise<void> {
   try {
     cleanup.value = await api.cleanupManifest(library.id);
   } catch (error) {
-    report("error", describe(error));
+    report("error", describeError(error));
     cleanupLibrary.value = null;
   } finally {
     cleanupLoading.value = false;
@@ -239,7 +230,7 @@ async function runCleanup(library: LibraryDto): Promise<void> {
     cleanup.value = null;
     cleanupLibrary.value = null;
   } catch (error) {
-    report("error", describe(error));
+    report("error", describeError(error));
   } finally {
     cleaningUp.value = false;
   }
@@ -257,7 +248,7 @@ async function loadTrash(library: LibraryDto): Promise<void> {
   try {
     trash.value = await api.trashListing(library.id);
   } catch (error) {
-    report("error", describe(error));
+    report("error", describeError(error));
     trashLibrary.value = null;
   } finally {
     trashLoading.value = false;
@@ -270,7 +261,7 @@ async function restore(library: LibraryDto, path: string): Promise<void> {
     trash.value = await api.trashRestore(library.id, path);
     report("ok", `已恢复 ${path}`);
   } catch (error) {
-    report("error", describe(error));
+    report("error", describeError(error));
   } finally {
     restoring.value = null;
   }

@@ -2,7 +2,7 @@
 import { onMounted, reactive, ref } from "vue";
 
 import {
-  ApiError,
+  describeError,
   api,
   type ScheduleDto,
 } from "@/api/client";
@@ -19,22 +19,13 @@ function report(kind: "error" | "ok", text: string): void {
   notice.value = { kind, text };
 }
 
-function describe(error: unknown): string {
-  if (error instanceof ApiError) {
-    return error.code === "unreachable"
-      ? "无法连接后端服务，请确认服务已启动后重试。"
-      : error.message;
-  }
-  return "请求失败，请稍后重试。";
-}
-
 async function refresh(): Promise<void> {
   loading.value = true;
   failure.value = null;
   try {
     schedules.value = (await api.listSchedules()).items;
   } catch (error) {
-    failure.value = describe(error);
+    failure.value = describeError(error);
   } finally {
     loading.value = false;
   }
@@ -56,7 +47,7 @@ async function create(): Promise<void> {
     form.number = "";
     await refresh();
   } catch (error) {
-    report("error", describe(error));
+    report("error", describeError(error));
   }
 }
 
@@ -66,7 +57,7 @@ async function toggle(schedule: ScheduleDto): Promise<void> {
     report("ok", schedule.enabled ? "已停用" : "已启用");
     await refresh();
   } catch (error) {
-    report("error", describe(error));
+    report("error", describeError(error));
   }
 }
 
@@ -76,7 +67,7 @@ async function remove(schedule: ScheduleDto): Promise<void> {
     report("ok", `已删除定时任务 #${schedule.id}`);
     await refresh();
   } catch (error) {
-    report("error", describe(error));
+    report("error", describeError(error));
   }
 }
 

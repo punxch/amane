@@ -27,6 +27,8 @@ export type CreateScheduleRequest = Schemas["CreateScheduleRequest"];
 export type UpdateScheduleRequest = Schemas["UpdateScheduleRequest"];
 export type ConfigState = Schemas["ConfigState"];
 export type SettingsDto = Schemas["SettingsDto"];
+export type UpdateConfigRequest = Schemas["UpdateConfigRequest"];
+export type HotSettingsDto = Schemas["HotSettingsDto"];
 export type LibraryDto = Schemas["LibraryDto"];
 export type LibraryPage = Schemas["LibraryPage"];
 export type LibraryFilePage = Schemas["LibraryFilePage"];
@@ -35,11 +37,8 @@ export type OrganizePreviewDto = Schemas["OrganizePreviewDto"];
 export type CleanupManifestDto = Schemas["CleanupManifestDto"];
 export type TrashPageDto = Schemas["TrashPageDto"];
 
-/** 保存配置的请求体; 字段与 `Settings` 一致, 由后端拒绝未知取值. */
-export interface ConfigBody {
-  cold: { data_dir: string; bind: string; api_token: string | null };
-  hot: { concurrency: number; request_timeout_secs: number; enabled_sources: string[] };
-}
+/** 保存配置的请求体; 字段与后端契约一致, 未知取值由后端拒绝. */
+export type ConfigBody = UpdateConfigRequest;
 
 export class ApiError extends Error {
   public readonly code: string;
@@ -49,6 +48,20 @@ export class ApiError extends Error {
     this.name = "ApiError";
     this.code = code;
   }
+}
+
+/**
+ * 把任意错误转成给用户看的说明.
+ *
+ * 各页面共用一份: 复制到页面里会让「后端不可用」这类判断在某一页悄悄漏掉.
+ */
+export function describeError(error: unknown): string {
+  if (error instanceof ApiError) {
+    return error.code === "unreachable"
+      ? "无法连接后端服务，请确认服务已启动后重试。"
+      : error.message;
+  }
+  return "请求失败，请稍后重试。";
 }
 
 const TOKEN_KEY = "amane_token";
@@ -70,7 +83,12 @@ function authHeaders(): Record<string, string> {
   return token === null ? {} : { authorization: `Bearer ${token}` };
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+/**
+ * 发一次请求并把错误映射成 `ApiError`.
+ *
+ * 成功时只返回正文, 不解析: 删除类端点返回 204 且没有正文, 统一在这里解析会让成功变成失败.
+ */
+async function send(path: string, init?: RequestInit): Promise<string> {
   let response: Response;
   try {
     response = await fetch(path, {
@@ -90,9 +108,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError("transport", `请求失败: ${response.status}`);
   }
 
+  return await response.text();
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const text = await send(path, init);
   // 断言必要性: 响应体由服务端契约保证, 运行时无法在不引入校验库的前提下收窄,
   // 因此把收窄点集中在这一个函数里, 调用方拿到的类型始终来自生成的 schema.
-  return (await response.json()) as T;
+  return JSON.parse(text) as T;
+}
+
+/** 没有响应体的请求: 删除类端点返回 204. */
+async function requestVoid(path: string, init?: RequestInit): Promise<void> {
+  await send(path, init);
 }
 
 function isApiErrorBody(value: unknown): value is ApiErrorBody {
@@ -207,7 +235,7 @@ export const api = {
     request(`/api/schedules/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
 
   deleteSchedule: (id: number): Promise<void> =>
-    request(`/api/schedules/${id}`, { method: "DELETE" }),
+    requestVoid(`/api/schedules/${id}`, { method: "DELETE" }),
 
   listLibraries: (): Promise<LibraryPage> => request("/api/libraries"),
 
@@ -215,7 +243,7 @@ export const api = {
     request("/api/libraries", { method: "POST", body: JSON.stringify(payload) }),
 
   deleteLibrary: (id: number): Promise<void> =>
-    request(`/api/libraries/${id}`, { method: "DELETE" }),
+    requestVoid(`/api/libraries/${id}`, { method: "DELETE" }),
 
   scanLibrary: (id: number): Promise<TaskDto> =>
     request(`/api/libraries/${id}/scan`, { method: "POST" }),

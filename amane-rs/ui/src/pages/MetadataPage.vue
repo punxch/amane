@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 
 import {
-  ApiError,
+  describeError,
   api,
   type ExtractedNumber,
   type FilterOptions,
@@ -43,15 +43,6 @@ function report(kind: "error" | "ok", text: string): void {
   notice.value = { kind, text };
 }
 
-function describe(error: unknown): string {
-  if (error instanceof ApiError) {
-    return error.code === "unreachable"
-      ? "无法连接后端服务，请确认服务已启动后重试。"
-      : error.message;
-  }
-  return "请求失败，请稍后重试。";
-}
-
 let requestSeq = 0;
 
 async function load(): Promise<void> {
@@ -84,7 +75,7 @@ async function load(): Promise<void> {
     }
     // 保留总数: 否则页码会显示成「第 2 / 1 页」.
     items.value = [];
-    failure.value = describe(error);
+    failure.value = describeError(error);
   } finally {
     if (seq === requestSeq) {
       loading.value = false;
@@ -122,7 +113,7 @@ async function inspect(item: MetadataDto): Promise<void> {
   try {
     showDetail(await api.metadata(item.number));
   } catch (error) {
-    report("error", describe(error));
+    report("error", describeError(error));
   }
 }
 
@@ -165,7 +156,7 @@ async function saveEdit(): Promise<void> {
     report("ok", "已保存，该字段已锁定");
     void load();
   } catch (error) {
-    report("error", describe(error));
+    report("error", describeError(error));
   }
 }
 
@@ -177,7 +168,7 @@ async function toggleLock(field: MetadataFieldDto): Promise<void> {
     showDetail(await api.setLock(detail.value.number, field.field, !field.locked));
     report("ok", field.locked ? `已解锁${field.label}` : `已锁定${field.label}`);
   } catch (error) {
-    report("error", describe(error));
+    report("error", describeError(error));
   }
 }
 
@@ -189,7 +180,7 @@ async function saveNote(): Promise<void> {
     showDetail(await api.updateMetadata(detail.value.number, { note: noteDraft.value }));
     report("ok", "备注已保存");
   } catch (error) {
-    report("error", describe(error));
+    report("error", describeError(error));
   }
 }
 
@@ -202,7 +193,7 @@ async function addTag(): Promise<void> {
     showDetail(await api.addTag(detail.value.number, name));
     tagDraft.value = "";
   } catch (error) {
-    report("error", describe(error));
+    report("error", describeError(error));
   }
 }
 
@@ -213,7 +204,7 @@ async function removeTag(name: string): Promise<void> {
   try {
     showDetail(await api.removeTag(detail.value.number, name));
   } catch (error) {
-    report("error", describe(error));
+    report("error", describeError(error));
   }
 }
 
@@ -233,7 +224,7 @@ async function submit(): Promise<void> {
     pageIndex.value = 0;
     await load();
   } catch (error) {
-    report("error", describe(error));
+    report("error", describeError(error));
   }
 }
 
@@ -246,7 +237,7 @@ async function detect(): Promise<void> {
     probeResult.value = await api.extract(probeText.value.trim());
   } catch (error) {
     probeResult.value = null;
-    report("error", describe(error));
+    report("error", describeError(error));
   }
 }
 

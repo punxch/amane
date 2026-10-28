@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 
 import {
-  ApiError,
+  describeError,
   api,
   type TaskDto,
   type TaskLogEntry,
@@ -37,10 +37,6 @@ const activeTask = computed(() =>
     : (tasks.value.find((task) => task.id === selected.value?.id) ?? selected.value),
 );
 
-function describe(error: unknown): string {
-  return error instanceof ApiError ? error.message : "请求失败";
-}
-
 function statusLabel(status: string): string {
   return STATUS_LABELS[status] ?? status;
 }
@@ -70,7 +66,7 @@ async function refresh(): Promise<void> {
     tasks.value = page.items;
     total.value = page.total;
   } catch (error) {
-    notice.value = describe(error);
+    notice.value = describeError(error);
   }
 }
 
@@ -78,7 +74,7 @@ async function loadLog(id: number): Promise<void> {
   try {
     logLines.value = (await api.taskLog(id)).items;
   } catch (error) {
-    notice.value = describe(error);
+    notice.value = describeError(error);
   }
 }
 
@@ -86,7 +82,7 @@ async function loadChildren(id: number): Promise<void> {
   try {
     children.value = (await api.taskChildren(id)).items;
   } catch (error) {
-    notice.value = describe(error);
+    notice.value = describeError(error);
   }
 }
 
@@ -109,7 +105,7 @@ async function submitScrape(): Promise<void> {
     await refresh();
     await select(task);
   } catch (error) {
-    notice.value = describe(error);
+    notice.value = describeError(error);
   } finally {
     busy.value = false;
   }
@@ -120,7 +116,7 @@ async function cancelTask(id: number): Promise<void> {
     await api.cancelTask(id);
     await refresh();
   } catch (error) {
-    notice.value = describe(error);
+    notice.value = describeError(error);
   }
 }
 
@@ -130,7 +126,7 @@ async function retryTask(id: number): Promise<void> {
     await refresh();
     await select(task);
   } catch (error) {
-    notice.value = describe(error);
+    notice.value = describeError(error);
   }
 }
 
