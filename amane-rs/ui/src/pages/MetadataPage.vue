@@ -7,6 +7,8 @@ import {
   type ExtractedNumber,
   type FilterOptions,
   type MetadataDto,
+  type MetadataFieldDto,
+  type UpdateMetadataRequest,
 } from "@/api/client";
 import HighlightedText from "@/components/HighlightedText.vue";
 import Button from "@/components/ui/Button.vue";
@@ -28,6 +30,9 @@ const form = reactive({ number: "", title: "" });
 const probeText = ref("");
 const probeResult = ref<ExtractedNumber | null>(null);
 const detail = ref<MetadataDto | null>(null);
+const editing = ref<{ field: string; value: string } | null>(null);
+const noteDraft = ref("");
+const tagDraft = ref("");
 
 const pageCount = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)));
 const hasFilter = computed(
@@ -107,9 +112,106 @@ function typeLabel(value: string): string {
   return option?.label ?? value;
 }
 
+function showDetail(dto: MetadataDto): void {
+  detail.value = dto;
+  noteDraft.value = dto.note ?? "";
+  editing.value = null;
+}
+
 async function inspect(item: MetadataDto): Promise<void> {
   try {
-    detail.value = await api.metadata(item.number);
+    showDetail(await api.metadata(item.number));
+  } catch (error) {
+    report("error", describe(error));
+  }
+}
+
+/** 字段来源的展示名称; `manual` 是人工修订的固定标识. */
+function sourceLabel(source: string | null | undefined): string {
+  if (source === null || source === undefined) {
+    return "未标注";
+  }
+  return source === "manual" ? "人工" : source;
+}
+
+function startEdit(field: MetadataFieldDto): void {
+  editing.value = { field: field.field, value: field.value ?? "" };
+}
+
+function cancelEdit(): void {
+  editing.value = null;
+}
+
+async function saveEdit(): Promise<void> {
+  if (editing.value === null || detail.value === null) {
+    return;
+  }
+  const { field, value } = editing.value;
+
+  // 断言必要性: 字段名在运行时才确定 (来自服务端的逐字段视图), TypeScript 无法把
+  // 动态键收窄到具体属性; 收窄点集中在这一处, 键与 PATCH 的字段一一对应.
+  const payload = (
+    field === "runtime_minutes"
+      ? { runtime_minutes: Number.parseInt(value.trim(), 10) }
+      : { [field]: value }
+  ) as UpdateMetadataRequest;
+  if (field === "runtime_minutes" && Number.isNaN(payload.runtime_minutes)) {
+    report("error", "时长应为整数分钟");
+    return;
+  }
+
+  try {
+    showDetail(await api.updateMetadata(detail.value.number, payload));
+    report("ok", "已保存，该字段已锁定");
+    void load();
+  } catch (error) {
+    report("error", describe(error));
+  }
+}
+
+async function toggleLock(field: MetadataFieldDto): Promise<void> {
+  if (detail.value === null) {
+    return;
+  }
+  try {
+    showDetail(await api.setLock(detail.value.number, field.field, !field.locked));
+    report("ok", field.locked ? `已解锁${field.label}` : `已锁定${field.label}`);
+  } catch (error) {
+    report("error", describe(error));
+  }
+}
+
+async function saveNote(): Promise<void> {
+  if (detail.value === null) {
+    return;
+  }
+  try {
+    showDetail(await api.updateMetadata(detail.value.number, { note: noteDraft.value }));
+    report("ok", "备注已保存");
+  } catch (error) {
+    report("error", describe(error));
+  }
+}
+
+async function addTag(): Promise<void> {
+  const name = tagDraft.value.trim();
+  if (detail.value === null || name === "") {
+    return;
+  }
+  try {
+    showDetail(await api.addTag(detail.value.number, name));
+    tagDraft.value = "";
+  } catch (error) {
+    report("error", describe(error));
+  }
+}
+
+async function removeTag(name: string): Promise<void> {
+  if (detail.value === null) {
+    return;
+  }
+  try {
+    showDetail(await api.removeTag(detail.value.number, name));
   } catch (error) {
     report("error", describe(error));
   }
@@ -355,39 +457,72 @@ onMounted(async () => {
             alt=""
             class="mt-3 w-full rounded-md border border-neutral-800 object-cover"
           />
-          <p class="mt-2 text-sm leading-snug text-neutral-300">{{ detail.title ?? "无标题" }}</p>
-          <dl class="mt-3 space-y-1 text-xs">
-            <div class="flex justify-between gap-3">
-              <dt class="text-neutral-600">上映日期</dt>
-              <dd class="text-neutral-300">{{ detail.release_date ?? "—" }}</dd>
+
+          <div class="mt-3 space-y-1.5">
+            <div
+              v-for="field in detail.fields"
+              :key="field.field"
+              class="rounded-md border border-neutral-900 px-2 py-1.5"
+            >
+              <div class="flex items-center justify-between gap-2">
+                <span class="text-[11px] text-neutral-600">{{ field.label }}</span>
+                <div class="flex items-center gap-2 text-[11px]">
+                  <span
+                    v-if="field.value !== null"
+                    :class="field.source === 'manual' ? 'text-amber-500' : 'text-neutral-600'"
+                  >
+                    {{ sourceLabel(field.source) }}
+                  </span>
+                  <button
+                    :class="
+                      field.locked
+                        ? 'text-amber-500 hover:text-amber-400'
+                        : 'text-neutral-600 hover:text-neutral-300'
+                    "
+                    @click="toggleLock(field)"
+                  >
+                    {{ field.locked ? "解锁" : "锁定" }}
+                  </button>
+                  <button
+                    v-if="field.field !== 'poster_url'"
+                    class="text-neutral-600 hover:text-neutral-300"
+                    @click="startEdit(field)"
+                  >
+                    修改
+                  </button>
+                </div>
+              </div>
+
+              <div v-if="editing?.field === field.field" class="mt-1">
+                <textarea
+                  v-if="field.field === 'plot'"
+                  v-model="editing.value"
+                  rows="3"
+                  class="w-full rounded border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs text-neutral-100 outline-none focus:border-emerald-600"
+                />
+                <input
+                  v-else
+                  v-model="editing.value"
+                  class="w-full rounded border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs text-neutral-100 outline-none focus:border-emerald-600"
+                />
+                <div class="mt-1 flex justify-end gap-2 text-[11px]">
+                  <button class="text-neutral-500 hover:text-neutral-300" @click="cancelEdit">
+                    取消
+                  </button>
+                  <button class="text-emerald-500 hover:text-emerald-400" @click="saveEdit">
+                    保存
+                  </button>
+                </div>
+              </div>
+              <p
+                v-else
+                class="mt-0.5 whitespace-pre-wrap break-words text-xs leading-relaxed text-neutral-300"
+              >
+                {{ field.value ?? "—" }}
+              </p>
             </div>
-            <div class="flex justify-between gap-3">
-              <dt class="text-neutral-600">时长</dt>
-              <dd class="text-neutral-300">
-                {{ detail.runtime_minutes === null ? "—" : `${detail.runtime_minutes} 分钟` }}
-              </dd>
-            </div>
-            <div class="flex justify-between gap-3">
-              <dt class="text-neutral-600">制作商</dt>
-              <dd class="text-right text-neutral-300">{{ detail.maker ?? "—" }}</dd>
-            </div>
-            <div class="flex justify-between gap-3">
-              <dt class="text-neutral-600">厂牌</dt>
-              <dd class="text-right text-neutral-300">{{ detail.label ?? "—" }}</dd>
-            </div>
-            <div class="flex justify-between gap-3">
-              <dt class="shrink-0 text-neutral-600">演员</dt>
-              <dd class="text-right text-neutral-300">
-                {{ detail.actors.length === 0 ? "—" : detail.actors.join("、") }}
-              </dd>
-            </div>
-          </dl>
-          <p
-            v-if="detail.plot"
-            class="mt-3 max-h-40 overflow-y-auto border-t border-neutral-800/60 pt-2 text-xs leading-relaxed text-neutral-500"
-          >
-            {{ detail.plot }}
-          </p>
+          </div>
+
           <p
             v-if="detail.poster_url && !detail.poster_local_url"
             class="mt-2 truncate font-mono text-xs text-amber-600"
@@ -395,19 +530,56 @@ onMounted(async () => {
             海报尚未存到本地: {{ detail.poster_url }}
           </p>
 
-          <div v-if="detail.sources.length > 0" class="mt-3 border-t border-neutral-800/60 pt-2">
-            <p class="text-xs text-neutral-600">来源: {{ detail.sources.join(" / ") }}</p>
-            <dl class="mt-1 space-y-0.5 font-mono text-[11px] text-neutral-500">
-              <div
-                v-for="(source, field) in detail.field_sources"
-                :key="field"
-                class="flex justify-between gap-3"
+          <p v-if="detail.actors.length > 0" class="mt-2 text-xs text-neutral-400">
+            演员: {{ detail.actors.join("、") }}
+          </p>
+
+          <div class="mt-3 border-t border-neutral-800/60 pt-2">
+            <span class="text-[11px] text-neutral-600">标签</span>
+            <div class="mt-1 flex flex-wrap items-center gap-1">
+              <span
+                v-for="tag in detail.tags"
+                :key="tag"
+                class="inline-flex items-center gap-1 rounded bg-neutral-800 px-1.5 py-0.5 text-[11px] text-neutral-300"
               >
-                <dt>{{ field }}</dt>
-                <dd>{{ source }}</dd>
-              </div>
-            </dl>
+                {{ tag }}
+                <button class="text-neutral-500 hover:text-red-400" @click="removeTag(tag)">
+                  ×
+                </button>
+              </span>
+              <input
+                v-model="tagDraft"
+                class="w-24 rounded border border-neutral-800 bg-neutral-900 px-1.5 py-0.5 text-[11px] text-neutral-100 outline-none focus:border-emerald-600"
+                placeholder="新标签"
+                @keyup.enter="addTag"
+              />
+              <button class="text-[11px] text-neutral-500 hover:text-neutral-300" @click="addTag">
+                添加
+              </button>
+            </div>
           </div>
+
+          <div class="mt-3 border-t border-neutral-800/60 pt-2">
+            <div class="flex items-center justify-between">
+              <span class="text-[11px] text-neutral-600">备注</span>
+              <button
+                class="text-[11px] text-neutral-500 hover:text-neutral-300"
+                @click="saveNote"
+              >
+                保存
+              </button>
+            </div>
+            <textarea
+              v-model="noteDraft"
+              rows="2"
+              class="mt-1 w-full rounded border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs text-neutral-100 outline-none focus:border-emerald-600"
+              placeholder="写给自己的备注"
+            />
+          </div>
+
+          <p v-if="detail.sources.length > 0" class="mt-3 text-xs text-neutral-600">
+            本次命中来源: {{ detail.sources.join(" / ") }}
+          </p>
         </section>
 
         <form class="rounded-lg border border-neutral-800/80 p-4" @submit.prevent="submit">

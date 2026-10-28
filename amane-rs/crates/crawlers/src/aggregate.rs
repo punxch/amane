@@ -44,8 +44,8 @@ pub fn aggregate(items: &[(&str, ScrapedMetadata)]) -> Aggregated {
             &scraped.runtime_minutes,
             |metadata| &mut metadata.runtime_minutes,
         );
-        take_scalar(&mut merged, "studio", source, &scraped.studio, |metadata| {
-            &mut metadata.studio
+        take_scalar(&mut merged, "maker", source, &scraped.maker, |metadata| {
+            &mut metadata.maker
         });
         take_scalar(&mut merged, "label", source, &scraped.label, |metadata| {
             &mut metadata.label
@@ -137,7 +137,7 @@ mod tests {
         };
         let second = ScrapedMetadata {
             title: Some("另一个标题".to_owned()),
-            studio: Some("片商".to_owned()),
+            maker: Some("片商".to_owned()),
             actors: vec!["演员".to_owned()],
             ..ScrapedMetadata::default()
         };
@@ -150,7 +150,7 @@ mod tests {
             "标量取首个非空"
         );
         assert_eq!(
-            merged.metadata.studio.as_deref(),
+            merged.metadata.maker.as_deref(),
             Some("片商"),
             "缺的字段由后续来源补"
         );
@@ -160,7 +160,7 @@ mod tests {
             Some("a")
         );
         assert_eq!(
-            merged.field_sources.get("studio").map(String::as_str),
+            merged.field_sources.get("maker").map(String::as_str),
             Some("b")
         );
     }

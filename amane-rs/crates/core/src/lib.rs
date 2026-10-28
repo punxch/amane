@@ -6,6 +6,7 @@
 pub mod config;
 pub mod content_type;
 pub mod db;
+pub mod lockable;
 pub mod metadata;
 pub mod number;
 pub mod resource;
@@ -13,7 +14,11 @@ pub mod task;
 
 pub use content_type::ContentType;
 pub use db::{Database, DbError};
-pub use metadata::{Metadata, MetadataFilter, MetadataInput, MetadataRepository, RepositoryError};
+pub use lockable::LockableField;
+pub use metadata::{
+    MANUAL_SOURCE, Metadata, MetadataFilter, MetadataInput, MetadataPatch, MetadataRepository,
+    RepositoryError, ScrapeApplied, ScrapeWrite,
+};
 pub use number::{MediaNumber, NumberError};
 pub use resource::{Resource, ResourceError, ResourceRepository};
 pub use task::{

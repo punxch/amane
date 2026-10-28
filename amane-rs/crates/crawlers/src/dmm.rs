@@ -141,7 +141,7 @@ fn parse_digital(response: &Value, number: &MediaNumber) -> Result<ScrapedMetada
         plot: text(&content["description"]),
         release_date,
         runtime_minutes: (duration > 0).then(|| i32::try_from(duration / 60).unwrap_or_default()),
-        studio: text(&content["maker"]["name"]),
+        maker: text(&content["maker"]["name"]),
         label: text(&content["label"]["name"]),
         series: text(&content["series"]["name"]),
         directors: names(&content["directors"]),
@@ -237,7 +237,7 @@ mod tests {
             scraped.release_date.map(|date| date.to_string()),
             Some("2021-02-18".to_owned())
         );
-        assert_eq!(scraped.studio.as_deref(), Some("エスワン"));
+        assert_eq!(scraped.maker.as_deref(), Some("エスワン"));
         assert_eq!(scraped.series, None);
         assert_eq!(scraped.actors, vec!["葵つかさ", "乙白さやか"]);
         assert_eq!(

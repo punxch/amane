@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use amane_core::{
-    MediaNumber, MetadataInput, MetadataRepository, TaskContext, TaskError, TaskHandler, TaskKind,
-    TaskOutcome,
+    LockableField, MediaNumber, MetadataInput, MetadataRepository, ScrapeWrite, TaskContext,
+    TaskError, TaskHandler, TaskKind, TaskOutcome,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -107,22 +107,36 @@ impl TaskHandler for ScrapeHandler {
             plot: scraped.plot.as_deref(),
             release_date: scraped.release_date,
             runtime_minutes: scraped.runtime_minutes,
-            maker: scraped.studio.as_deref(),
+            maker: scraped.maker.as_deref(),
             label: scraped.label.as_deref(),
             series: scraped.series.as_deref(),
             poster_url: scraped.poster_url.as_deref(),
             actors: Some(&scraped.actors),
         };
 
-        let row = self
+        let write = ScrapeWrite {
+            number: &number,
+            input,
+            field_sources: merged.field_sources.clone(),
+        };
+        let applied = self
             .metadata
-            .upsert(&number, &input)
+            .apply_scraped(&write)
             .await
             .map_err(|error| TaskError::Failed(format!("写入番号条目失败: {error}")))?;
+        let row = applied.row;
         context
             .logger
             .info(format!("写入番号条目 {}", row.number))
             .await;
+
+        if !applied.kept.is_empty() {
+            let names: Vec<&str> = applied.kept.iter().map(|field| field.label()).collect();
+            context
+                .logger
+                .info(format!("以下字段已锁定, 保留原值: {}", names.join("、")))
+                .await;
+        }
 
         // 快照与字段来源用于回溯: 某个字段是从哪个来源来的, 以及各来源当时返回了什么.
         let snapshots: Vec<(String, String)> = hits
@@ -137,13 +151,11 @@ impl TaskHandler for ScrapeHandler {
             .replace_snapshots(row.id, &snapshots)
             .await
             .map_err(|error| TaskError::Failed(format!("写入来源快照失败: {error}")))?;
-        self.metadata
-            .set_field_sources(row.id, &merged.field_sources_json().to_string())
-            .await
-            .map_err(|error| TaskError::Failed(format!("写入字段来源失败: {error}")))?;
-
         // 上游问题 (下载失败) 只告警; 本地写库失败才判任务失败.
-        if let Some(url) = scraped.poster_url.as_deref() {
+        let poster_locked = applied.kept.contains(&LockableField::PosterUrl);
+        if poster_locked {
+            context.logger.info("海报字段已锁定, 跳过下载").await;
+        } else if let Some(url) = row.poster_url.as_deref() {
             context.logger.info("下载海报").await;
             match self.resources.materialize(url).await {
                 Ok(resource) => {
@@ -171,8 +183,8 @@ mod tests {
     use std::sync::Arc;
 
     use amane_core::{
-        Database, MediaNumber, MetadataRepository, TaskContext, TaskError, TaskHandler, TaskLogger,
-        TaskOutcome,
+        Database, LockableField, MediaNumber, MetadataInput, MetadataRepository, TaskContext,
+        TaskError, TaskHandler, TaskLogger, TaskOutcome,
     };
     use async_trait::async_trait;
     use tokio_util::sync::CancellationToken;
@@ -299,6 +311,48 @@ mod tests {
             .expect("应查询成功")
             .expect("应写入番号条目");
         assert_eq!(row.title.as_deref(), Some("命中 ABC-123"));
+    }
+
+    #[tokio::test]
+    async fn keeps_locked_field_after_scrape() {
+        let fixture = fixture(vec![source("working", Some("刮削"), false)]).await;
+        let number = MediaNumber::parse("ABC-123").expect("应解析成功");
+        let row = fixture
+            .metadata
+            .upsert(
+                &number,
+                &MetadataInput {
+                    title: Some("人工标题"),
+                    ..MetadataInput::default()
+                },
+            )
+            .await
+            .expect("应写入成功");
+        fixture
+            .metadata
+            .set_lock(row.id, LockableField::Title, true)
+            .await
+            .expect("应加锁成功");
+
+        run(
+            &fixture.handler,
+            fixture.dir.path(),
+            serde_json::json!({ "number": "ABC-123" }),
+        )
+        .await
+        .expect("应完成");
+
+        let stored = fixture
+            .metadata
+            .find(&number)
+            .await
+            .expect("应查询成功")
+            .expect("应存在");
+        assert_eq!(
+            stored.title.as_deref(),
+            Some("人工标题"),
+            "锁定字段不应被刮削覆盖"
+        );
     }
 
     #[tokio::test]

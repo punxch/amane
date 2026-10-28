@@ -91,7 +91,18 @@ impl From<NumberError> for ApiError {
 
 impl From<RepositoryError> for ApiError {
     fn from(error: RepositoryError) -> Self {
-        tracing::error!(error = %error, "仓储操作失败");
-        Self::Internal("数据库操作失败".to_owned())
+        match error {
+            RepositoryError::NotFound => Self::NotFound {
+                what: "番号条目不存在".to_owned(),
+            },
+            RepositoryError::InvalidInput(message) => Self::Invalid {
+                code: "invalid_input",
+                message,
+            },
+            RepositoryError::Database(error) => {
+                tracing::error!(%error, "仓储操作失败");
+                Self::Internal("数据库操作失败".to_owned())
+            }
+        }
     }
 }

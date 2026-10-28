@@ -19,6 +19,8 @@ export type CreateTaskRequest = Schemas["CreateTaskRequest"];
 export type TaskLogEntry = Schemas["TaskLogEntry"];
 export type TaskLogPage = Schemas["TaskLogPage"];
 export type FilterOptions = Schemas["FilterOptions"];
+export type MetadataFieldDto = Schemas["MetadataFieldDto"];
+export type UpdateMetadataRequest = Schemas["UpdateMetadataRequest"];
 
 export class ApiError extends Error {
   public readonly code: string;
@@ -96,6 +98,30 @@ export const api = {
 
   metadata: (number: string): Promise<MetadataDto> =>
     request(`/api/metadata/${encodeURIComponent(number)}`),
+
+  updateMetadata: (number: string, payload: UpdateMetadataRequest): Promise<MetadataDto> =>
+    request(`/api/metadata/${encodeURIComponent(number)}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+
+  setLock: (number: string, field: string, locked: boolean): Promise<MetadataDto> =>
+    request(`/api/metadata/${encodeURIComponent(number)}/locks/${encodeURIComponent(field)}`, {
+      method: "PUT",
+      body: JSON.stringify({ locked }),
+    }),
+
+  addTag: (number: string, name: string): Promise<MetadataDto> =>
+    request(`/api/metadata/${encodeURIComponent(number)}/tags`, {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
+
+  removeTag: (number: string, name: string): Promise<MetadataDto> =>
+    request(
+      `/api/metadata/${encodeURIComponent(number)}/tags/${encodeURIComponent(name)}`,
+      { method: "DELETE" },
+    ),
 
   create: (payload: CreateMetadataRequest): Promise<MetadataDto> =>
     request("/api/metadata", {

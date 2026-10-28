@@ -1,4 +1,6 @@
-use amane_core::{Metadata, Task, TaskLogLine};
+use std::collections::{BTreeMap, BTreeSet};
+
+use amane_core::{LockableField, Metadata, MetadataPatch, Task, TaskLogLine};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -26,8 +28,16 @@ pub struct MetadataDto {
     pub actors: Vec<String>,
     /// 本次刮削命中的来源标识; 只有详情端点填充.
     pub sources: Vec<String>,
-    /// 字段名 → 贡献该字段的来源标识.
-    pub field_sources: std::collections::BTreeMap<String, String>,
+    /// 字段名 → 贡献该字段的来源标识; `manual` 表示人工修订.
+    pub field_sources: BTreeMap<String, String>,
+    /// 用户备注.
+    pub note: Option<String>,
+    /// 被锁定的字段标识.
+    pub locked_fields: Vec<String>,
+    /// 用户标签.
+    pub tags: Vec<String>,
+    /// 逐字段视图; 只有详情端点填充.
+    pub fields: Vec<MetadataFieldDto>,
     /// 类型, 取值见 `ContentType`.
     pub content_type: String,
     pub created_at: DateTime<Utc>,
@@ -57,11 +67,106 @@ impl From<Metadata> for MetadataDto {
                 .as_deref()
                 .and_then(|raw| serde_json::from_str(raw).ok())
                 .unwrap_or_default(),
+            note: value.note,
+            locked_fields: Vec::new(),
+            tags: Vec::new(),
+            fields: Vec::new(),
             content_type: value.content_type.as_str().to_owned(),
             created_at: value.created_at,
             updated_at: value.updated_at,
         }
     }
+}
+
+/// 详情页上的一个字段: 值、来源与锁定状态.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MetadataFieldDto {
+    /// 字段标识, 也是加锁与修订时使用的键.
+    pub field: String,
+    pub label: String,
+    /// 已格式化为文本的值; `None` 表示未提供.
+    pub value: Option<String>,
+    /// 贡献该字段的来源标识; `manual` 表示人工修订.
+    pub source: Option<String>,
+    pub locked: bool,
+}
+
+impl MetadataDto {
+    /// 逐字段视图. 界面据此渲染字段列表与锁按钮, 不自行维护字段清单.
+    pub fn field_views(&self, locks: &BTreeSet<LockableField>) -> Vec<MetadataFieldDto> {
+        LockableField::ALL
+            .into_iter()
+            .map(|field| MetadataFieldDto {
+                field: field.as_str().to_owned(),
+                label: field.label().to_owned(),
+                value: match field {
+                    LockableField::Title => self.title.clone(),
+                    LockableField::Plot => self.plot.clone(),
+                    LockableField::ReleaseDate => self.release_date.clone(),
+                    LockableField::RuntimeMinutes => {
+                        self.runtime_minutes.map(|minutes| minutes.to_string())
+                    }
+                    LockableField::Maker => self.maker.clone(),
+                    LockableField::Label => self.label.clone(),
+                    LockableField::Series => self.series.clone(),
+                    LockableField::PosterUrl => self.poster_url.clone(),
+                },
+                source: self.field_sources.get(field.as_str()).cloned(),
+                locked: locks.contains(&field),
+            })
+            .collect()
+    }
+}
+
+/// 手工修订. 未提供的字段保持不变; 空字符串表示清空.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateMetadataRequest {
+    pub title: Option<String>,
+    pub plot: Option<String>,
+    /// 形如 `2021-02-18`; 空字符串表示清空.
+    pub release_date: Option<String>,
+    pub runtime_minutes: Option<i32>,
+    pub maker: Option<String>,
+    pub label: Option<String>,
+    pub series: Option<String>,
+    pub note: Option<String>,
+}
+
+impl UpdateMetadataRequest {
+    /// 一个字段都没提供时没有可写的内容, 调用方应拒绝而不是空转一次更新.
+    pub fn is_empty(&self) -> bool {
+        self.title.is_none()
+            && self.plot.is_none()
+            && self.release_date.is_none()
+            && self.runtime_minutes.is_none()
+            && self.maker.is_none()
+            && self.label.is_none()
+            && self.series.is_none()
+            && self.note.is_none()
+    }
+
+    pub fn patch(&self) -> MetadataPatch<'_> {
+        MetadataPatch {
+            title: self.title.as_deref(),
+            plot: self.plot.as_deref(),
+            release_date: self.release_date.as_deref(),
+            runtime_minutes: self.runtime_minutes,
+            maker: self.maker.as_deref(),
+            label: self.label.as_deref(),
+            series: self.series.as_deref(),
+            note: self.note.as_deref(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct LockRequest {
+    pub locked: bool,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct TagRequest {
+    pub name: String,
 }
 
 #[derive(Debug, Serialize, ToSchema)]

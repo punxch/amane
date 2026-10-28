@@ -146,7 +146,7 @@ fn parse_detail(html: &str, number: &MediaNumber) -> Result<ScrapedMetadata, Sou
             "導演" | "Director" => {
                 metadata.directors = element_texts(&value_element, &link_selector)
             }
-            "片商" | "製作商" | "Maker" => metadata.studio = non_empty(value),
+            "片商" | "製作商" | "Maker" => metadata.maker = non_empty(value),
             "發行" | "發行商" | "Label" => metadata.label = non_empty(value),
             "系列" | "Series" => metadata.series = non_empty(value),
             "類別" | "Tags" => metadata.tags = element_texts(&value_element, &link_selector),
@@ -255,7 +255,7 @@ mod tests {
             Some("2021-02-19".to_owned())
         );
         assert_eq!(scraped.runtime_minutes, Some(150));
-        assert_eq!(scraped.studio.as_deref(), Some("エスワン"));
+        assert_eq!(scraped.maker.as_deref(), Some("エスワン"));
         assert_eq!(scraped.series, None, "空值不应写成空字符串");
         assert_eq!(scraped.actors, vec!["葵つかさ", "乙白さやか"]);
         assert_eq!(scraped.tags, vec!["ドラマ"]);

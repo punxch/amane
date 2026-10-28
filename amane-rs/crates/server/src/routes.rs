@@ -1,8 +1,8 @@
 use amane_core::TaskLogger;
 use amane_core::config::Settings;
 use amane_core::{
-    MediaNumber, MetadataFilter, MetadataInput, TaskFilter, TaskKind, TaskServiceError, TaskSpec,
-    TaskStatus,
+    LockableField, MediaNumber, MetadataFilter, MetadataInput, TaskFilter, TaskKind,
+    TaskServiceError, TaskSpec, TaskStatus,
 };
 use axum::Json;
 use axum::Router;
@@ -11,12 +11,12 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 
 use crate::dto::{
     ContentTypeOption, CreateMetadataRequest, CreateTaskRequest, ExtractedNumber, FilterOptions,
-    HealthResponse, ListQuery, MetadataDto, MetadataPage, SourceOption, TaskDto, TaskListQuery,
-    TaskLogEntry, TaskLogPage, TaskPage,
+    HealthResponse, ListQuery, LockRequest, MetadataDto, MetadataPage, SourceOption, TagRequest,
+    TaskDto, TaskListQuery, TaskLogEntry, TaskLogPage, TaskPage, UpdateMetadataRequest,
 };
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -28,7 +28,16 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/health", get(health))
         .route("/metadata", get(list_metadata).post(create_metadata))
-        .route("/metadata/{number}", get(get_metadata))
+        .route(
+            "/metadata/{number}",
+            get(get_metadata).patch(update_metadata),
+        )
+        .route("/metadata/{number}/locks/{field}", put(set_lock))
+        .route("/metadata/{number}/tags", post(add_tag))
+        .route(
+            "/metadata/{number}/tags/{name}",
+            axum::routing::delete(remove_tag),
+        )
         .route("/filters", get(filter_options))
         .route("/number/extract", get(extract_number))
         .route("/config/schema", get(config_schema))
@@ -103,6 +112,191 @@ pub async fn create_metadata(
     Ok((StatusCode::CREATED, Json(MetadataDto::from(row))))
 }
 
+/// 详情端点共用的装配: 演员、来源、标签、锁与逐字段视图.
+async fn load_detail(state: &AppState, number: &MediaNumber) -> Result<MetadataDto, ApiError> {
+    let row = state
+        .runtime
+        .metadata
+        .find(number)
+        .await?
+        .ok_or_else(|| ApiError::NotFound {
+            what: format!("影片 {number} 不存在"),
+        })?;
+
+    let mut dto = MetadataDto::from(row);
+    dto.actors = state.runtime.metadata.actors(dto.id).await?;
+    dto.sources = state
+        .runtime
+        .metadata
+        .snapshots(dto.id)
+        .await?
+        .into_iter()
+        .map(|(source_id, _payload)| source_id)
+        .collect();
+    dto.tags = state.runtime.metadata.tags(dto.id).await?;
+    let locks = state.runtime.metadata.locks(dto.id).await?;
+    dto.fields = dto.field_views(&locks);
+    dto.locked_fields = locks
+        .iter()
+        .map(|field| field.as_str().to_owned())
+        .collect();
+
+    Ok(dto)
+}
+
+/// 手工修订字段. 修订过的字段同时加锁, 并把来源记为人工.
+#[utoipa::path(
+    patch,
+    path = "/api/metadata/{number}",
+    tag = "metadata",
+    params(("number" = String, Path, description = "番号")),
+    request_body = UpdateMetadataRequest,
+    responses(
+        (status = 200, body = MetadataDto),
+        (status = 400, body = crate::error::ErrorBody),
+        (status = 404, body = crate::error::ErrorBody),
+        (status = 401, body = crate::error::ErrorBody)
+    )
+)]
+pub async fn update_metadata(
+    State(state): State<AppState>,
+    Path(number): Path<String>,
+    Json(payload): Json<UpdateMetadataRequest>,
+) -> Result<Json<MetadataDto>, ApiError> {
+    let number = MediaNumber::parse(&number)?;
+    if payload.is_empty() {
+        return Err(ApiError::Invalid {
+            code: "empty_patch",
+            message: "没有要修改的字段".to_owned(),
+        });
+    }
+
+    state
+        .runtime
+        .metadata
+        .update_fields(&number, &payload.patch())
+        .await?;
+
+    Ok(Json(load_detail(&state, &number).await?))
+}
+
+/// 加锁或解锁单个字段.
+#[utoipa::path(
+    put,
+    path = "/api/metadata/{number}/locks/{field}",
+    tag = "metadata",
+    params(
+        ("number" = String, Path, description = "番号"),
+        ("field" = String, Path, description = "字段标识")
+    ),
+    request_body = LockRequest,
+    responses(
+        (status = 200, body = MetadataDto),
+        (status = 400, body = crate::error::ErrorBody),
+        (status = 404, body = crate::error::ErrorBody),
+        (status = 401, body = crate::error::ErrorBody)
+    )
+)]
+pub async fn set_lock(
+    State(state): State<AppState>,
+    Path((number, field)): Path<(String, String)>,
+    Json(payload): Json<LockRequest>,
+) -> Result<Json<MetadataDto>, ApiError> {
+    let number = MediaNumber::parse(&number)?;
+    let field = LockableField::parse(&field).ok_or_else(|| ApiError::Invalid {
+        code: "invalid_field",
+        message: format!("未知字段: {field}"),
+    })?;
+    let row = state
+        .runtime
+        .metadata
+        .find(&number)
+        .await?
+        .ok_or_else(|| ApiError::NotFound {
+            what: format!("影片 {number} 不存在"),
+        })?;
+
+    state
+        .runtime
+        .metadata
+        .set_lock(row.id, field, payload.locked)
+        .await?;
+
+    Ok(Json(load_detail(&state, &number).await?))
+}
+
+/// 添加用户标签. 同名标签复用同一条记录.
+#[utoipa::path(
+    post,
+    path = "/api/metadata/{number}/tags",
+    tag = "metadata",
+    params(("number" = String, Path, description = "番号")),
+    request_body = TagRequest,
+    responses(
+        (status = 200, body = MetadataDto),
+        (status = 400, body = crate::error::ErrorBody),
+        (status = 404, body = crate::error::ErrorBody),
+        (status = 401, body = crate::error::ErrorBody)
+    )
+)]
+pub async fn add_tag(
+    State(state): State<AppState>,
+    Path(number): Path<String>,
+    Json(payload): Json<TagRequest>,
+) -> Result<Json<MetadataDto>, ApiError> {
+    let number = MediaNumber::parse(&number)?;
+    let row = state
+        .runtime
+        .metadata
+        .find(&number)
+        .await?
+        .ok_or_else(|| ApiError::NotFound {
+            what: format!("影片 {number} 不存在"),
+        })?;
+
+    state
+        .runtime
+        .metadata
+        .add_tag(row.id, &payload.name)
+        .await?;
+
+    Ok(Json(load_detail(&state, &number).await?))
+}
+
+/// 移除用户标签.
+#[utoipa::path(
+    delete,
+    path = "/api/metadata/{number}/tags/{name}",
+    tag = "metadata",
+    params(
+        ("number" = String, Path, description = "番号"),
+        ("name" = String, Path, description = "标签名")
+    ),
+    responses(
+        (status = 200, body = MetadataDto),
+        (status = 404, body = crate::error::ErrorBody),
+        (status = 401, body = crate::error::ErrorBody)
+    )
+)]
+pub async fn remove_tag(
+    State(state): State<AppState>,
+    Path((number, name)): Path<(String, String)>,
+) -> Result<Json<MetadataDto>, ApiError> {
+    let number = MediaNumber::parse(&number)?;
+    let row = state
+        .runtime
+        .metadata
+        .find(&number)
+        .await?
+        .ok_or_else(|| ApiError::NotFound {
+            what: format!("影片 {number} 不存在"),
+        })?;
+
+    state.runtime.metadata.remove_tag(row.id, &name).await?;
+
+    Ok(Json(load_detail(&state, &number).await?))
+}
+
 #[utoipa::path(
     get,
     path = "/api/metadata/{number}",
@@ -119,27 +313,8 @@ pub async fn get_metadata(
     Path(number): Path<String>,
 ) -> Result<Json<MetadataDto>, ApiError> {
     let number = MediaNumber::parse(&number)?;
-    let row = state
-        .runtime
-        .metadata
-        .find(&number)
-        .await?
-        .ok_or_else(|| ApiError::NotFound {
-            what: format!("影片 {number} 不存在"),
-        })?;
 
-    let mut dto = MetadataDto::from(row);
-    dto.actors = state.runtime.metadata.actors(dto.id).await?;
-    dto.sources = state
-        .runtime
-        .metadata
-        .snapshots(dto.id)
-        .await?
-        .into_iter()
-        .map(|(source_id, _payload)| source_id)
-        .collect();
-
-    Ok(Json(dto))
+    Ok(Json(load_detail(&state, &number).await?))
 }
 
 #[utoipa::path(

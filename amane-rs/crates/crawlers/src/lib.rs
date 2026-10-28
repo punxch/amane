@@ -48,7 +48,7 @@ pub struct ScrapedMetadata {
     pub plot: Option<String>,
     pub release_date: Option<NaiveDate>,
     pub runtime_minutes: Option<i32>,
-    pub studio: Option<String>,
+    pub maker: Option<String>,
     pub label: Option<String>,
     pub series: Option<String>,
     pub directors: Vec<String>,

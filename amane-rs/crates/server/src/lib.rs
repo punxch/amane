@@ -28,6 +28,10 @@ pub use state::{AppState, Runtime};
         routes::list_metadata,
         routes::create_metadata,
         routes::get_metadata,
+        routes::update_metadata,
+        routes::set_lock,
+        routes::add_tag,
+        routes::remove_tag,
         routes::extract_number,
         routes::config_schema,
         routes::filter_options,
@@ -42,6 +46,10 @@ pub use state::{AppState, Runtime};
     ),
     components(schemas(
         dto::MetadataDto,
+        dto::MetadataFieldDto,
+        dto::UpdateMetadataRequest,
+        dto::LockRequest,
+        dto::TagRequest,
         dto::MetadataPage,
         dto::CreateMetadataRequest,
         dto::HealthResponse,
@@ -348,6 +356,184 @@ mod tests {
         assert!(!body["message"].as_str().unwrap_or_default().is_empty());
     }
 
+    /// 建一条手工番号条目, 供详情相关用例共用.
+    async fn seeded_entry(app: &axum::Router) {
+        let (status, _) = call(
+            app.clone(),
+            Method::POST,
+            "/api/metadata",
+            Some(r#"{"number":"ABC-001","title":"原标题"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+
+    fn field_of<'a>(detail: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+        detail["fields"]
+            .as_array()
+            .expect("fields 应为数组")
+            .iter()
+            .find(|field| field["field"] == name)
+            .expect("应包含该字段")
+    }
+
+    #[tokio::test]
+    async fn manual_edit_locks_field_and_marks_it_manual() {
+        let (_dir, app) = app(None).await;
+        seeded_entry(&app).await;
+
+        let (status, detail) = call(
+            app.clone(),
+            Method::PATCH,
+            "/api/metadata/ABC-001",
+            Some(r#"{"title":"人工标题","note":"记一笔"}"#),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(detail["title"], "人工标题");
+        assert_eq!(detail["note"], "记一笔");
+        assert_eq!(
+            detail["locked_fields"],
+            serde_json::json!(["title"]),
+            "手工修订应同时加锁"
+        );
+        let title = field_of(&detail, "title");
+        assert_eq!(title["source"], "manual", "来源应标为人工");
+        assert_eq!(title["locked"], true);
+        assert_eq!(title["label"], "标题");
+    }
+
+    #[tokio::test]
+    async fn lock_can_be_toggled_and_rejects_unknown_field() {
+        let (_dir, app) = app(None).await;
+        seeded_entry(&app).await;
+
+        let (status, detail) = call(
+            app.clone(),
+            Method::PUT,
+            "/api/metadata/ABC-001/locks/plot",
+            Some(r#"{"locked":true}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(detail["locked_fields"], serde_json::json!(["plot"]));
+        assert_eq!(field_of(&detail, "plot")["locked"], true);
+
+        let (status, detail) = call(
+            app.clone(),
+            Method::PUT,
+            "/api/metadata/ABC-001/locks/plot",
+            Some(r#"{"locked":false}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(detail["locked_fields"], serde_json::json!([]));
+
+        let (status, body) = call(
+            app.clone(),
+            Method::PUT,
+            "/api/metadata/ABC-001/locks/actors",
+            Some(r#"{"locked":true}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["code"], "invalid_field");
+
+        let (status, _) = call(
+            app.clone(),
+            Method::PUT,
+            "/api/metadata/ZZZ-999/locks/title",
+            Some(r#"{"locked":true}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn tags_dedupe_and_remove() {
+        let (_dir, app) = app(None).await;
+        seeded_entry(&app).await;
+
+        let (status, detail) = call(
+            app.clone(),
+            Method::POST,
+            "/api/metadata/ABC-001/tags",
+            Some(r#"{"name":"收藏"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(detail["tags"], serde_json::json!(["收藏"]));
+
+        let (_, detail) = call(
+            app.clone(),
+            Method::POST,
+            "/api/metadata/ABC-001/tags",
+            Some(r#"{"name":" 收藏 "}"#),
+        )
+        .await;
+        assert_eq!(
+            detail["tags"],
+            serde_json::json!(["收藏"]),
+            "同名标签不应重复"
+        );
+
+        let (_, detail) = call(
+            app.clone(),
+            Method::POST,
+            "/api/metadata/ABC-001/tags",
+            Some(r#"{"name":"待看"}"#),
+        )
+        .await;
+        assert_eq!(detail["tags"], serde_json::json!(["收藏", "待看"]));
+
+        let (status, detail) = call(
+            app.clone(),
+            Method::DELETE,
+            "/api/metadata/ABC-001/tags/%E6%94%B6%E8%97%8F",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(detail["tags"], serde_json::json!(["待看"]));
+
+        let (status, body) = call(
+            app.clone(),
+            Method::POST,
+            "/api/metadata/ABC-001/tags",
+            Some(r#"{"name":"   "}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["code"], "invalid_input");
+    }
+
+    #[tokio::test]
+    async fn patch_rejects_empty_body_and_bad_date() {
+        let (_dir, app) = app(None).await;
+        seeded_entry(&app).await;
+
+        let (status, body) = call(
+            app.clone(),
+            Method::PATCH,
+            "/api/metadata/ABC-001",
+            Some("{}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["code"], "empty_patch");
+
+        let (status, body) = call(
+            app.clone(),
+            Method::PATCH,
+            "/api/metadata/ABC-001",
+            Some(r#"{"release_date":"2021/02/18"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["code"], "invalid_input");
+    }
+
     #[tokio::test]
     async fn filter_options_come_from_registry() {
         let (_dir, app) = app(None).await;
@@ -568,6 +754,9 @@ mod tests {
             "/api/health",
             "/api/metadata",
             "/api/metadata/{number}",
+            "/api/metadata/{number}/locks/{field}",
+            "/api/metadata/{number}/tags",
+            "/api/metadata/{number}/tags/{name}",
             "/api/number/extract",
             "/api/config/schema",
             "/api/filters",
