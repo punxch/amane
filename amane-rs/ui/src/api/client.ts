@@ -4,9 +4,17 @@
  * 类型全部来自 `schema.d.ts`, 由服务端契约生成; 本文件只保留请求封装与错误类型.
  * 接口改动后重新运行 `just rs generate`, 前端类型检查会指出需要同步的位置.
  */
-import type { components } from "@/api/schema";
+import type { components, paths } from "@/api/schema";
 
 type Schemas = components["schemas"];
+
+/** 契约里的路径字面量. 拼错的路径在编译期暴露, 不必等到运行时 404. */
+export type ApiPath = keyof paths & string;
+
+declare const filledPath: unique symbol;
+
+/** 占位符已替换的路径. 只有 `fill` 能产出它, 因此带参数的端点也受路径字面量约束. */
+export type FilledPath = string & { readonly [filledPath]: true };
 
 export type MetadataDto = Schemas["MetadataDto"];
 export type MetadataPage = Schemas["MetadataPage"];
@@ -123,16 +131,48 @@ async function send(path: string, init?: RequestInit): Promise<string> {
   return await response.text();
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const text = await send(path, init);
+/**
+ * 把 `/api/metadata/{number}` 的占位符换成实参.
+ *
+ * 参数名写错时得到运行时错误而不是静默的空路径: 模板来自契约, 实参来自调用方, 两者只能在这里对上.
+ */
+function fill(template: ApiPath, params: Record<string, string | number>): FilledPath {
+  const path = template.replace(/\{(\w+)\}/g, (_, key: string) => {
+    const value = params[key];
+    if (value === undefined) {
+      throw new Error(`路径 ${template} 缺少参数 ${key}`);
+    }
+    return encodeURIComponent(String(value));
+  });
+
+  // 断言必要性: 占位符已全部替换, 结果是同一份契约路径的实例; 类型系统无法表达这个后置条件.
+  return path as FilledPath;
+}
+
+/** 拼上查询串; 空查询不留下多余的 `?`. */
+function withQuery(template: ApiPath | FilledPath, query?: URLSearchParams): string {
+  const suffix = query?.toString() ?? "";
+  return suffix === "" ? template : `${template}?${suffix}`;
+}
+
+async function request<T>(
+  template: ApiPath | FilledPath,
+  init?: RequestInit,
+  query?: URLSearchParams,
+): Promise<T> {
+  const text = await send(withQuery(template, query), init);
   // 断言必要性: 响应体由服务端契约保证, 运行时无法在不引入校验库的前提下收窄,
   // 因此把收窄点集中在这一个函数里, 调用方拿到的类型始终来自生成的 schema.
   return JSON.parse(text) as T;
 }
 
 /** 没有响应体的请求: 删除类端点返回 204. */
-async function requestVoid(path: string, init?: RequestInit): Promise<void> {
-  await send(path, init);
+async function requestVoid(
+  template: ApiPath | FilledPath,
+  init?: RequestInit,
+  query?: URLSearchParams,
+): Promise<void> {
+  await send(withQuery(template, query), init);
 }
 
 function isApiErrorBody(value: unknown): value is ApiErrorBody {
@@ -175,40 +215,39 @@ export const api = {
     if (query.genre !== null && query.genre !== undefined && query.genre !== "") {
       params.set("genre", query.genre);
     }
-    return request(`/api/metadata?${params.toString()}`);
+    return request("/api/metadata", undefined, params);
   },
 
   filters: (): Promise<FilterOptions> => request("/api/filters"),
 
   metadata: (number: string): Promise<MetadataDto> =>
-    request(`/api/metadata/${encodeURIComponent(number)}`),
+    request(fill("/api/metadata/{number}", { number })),
 
   deleteMetadata: (number: string): Promise<void> =>
-    requestVoid(`/api/metadata/${encodeURIComponent(number)}`, { method: "DELETE" }),
+    requestVoid(fill("/api/metadata/{number}", { number }), { method: "DELETE" }),
 
   updateMetadata: (number: string, payload: UpdateMetadataRequest): Promise<MetadataDto> =>
-    request(`/api/metadata/${encodeURIComponent(number)}`, {
+    request(fill("/api/metadata/{number}", { number }), {
       method: "PATCH",
       body: JSON.stringify(payload),
     }),
 
   setLock: (number: string, field: string, locked: boolean): Promise<MetadataDto> =>
-    request(`/api/metadata/${encodeURIComponent(number)}/locks/${encodeURIComponent(field)}`, {
+    request(fill("/api/metadata/{number}/locks/{field}", { number, field }), {
       method: "PUT",
       body: JSON.stringify({ locked }),
     }),
 
   addTag: (number: string, name: string): Promise<MetadataDto> =>
-    request(`/api/metadata/${encodeURIComponent(number)}/tags`, {
+    request(fill("/api/metadata/{number}/tags", { number }), {
       method: "POST",
       body: JSON.stringify({ name }),
     }),
 
   removeTag: (number: string, name: string): Promise<MetadataDto> =>
-    request(
-      `/api/metadata/${encodeURIComponent(number)}/tags/${encodeURIComponent(name)}`,
-      { method: "DELETE" },
-    ),
+    request(fill("/api/metadata/{number}/tags/{name}", { number, name }), {
+      method: "DELETE",
+    }),
 
   create: (payload: CreateMetadataRequest): Promise<MetadataDto> =>
     request("/api/metadata", {
@@ -217,28 +256,29 @@ export const api = {
     }),
 
   extract: (text: string): Promise<ExtractedNumber> =>
-    request(`/api/number/extract?text=${encodeURIComponent(text)}`),
+    request("/api/number/extract", undefined, new URLSearchParams({ text })),
 
   listTasks: (status: string | null, limit = 50, offset = 0): Promise<TaskPage> => {
     const query = new URLSearchParams({ limit: String(limit), offset: String(offset) });
     if (status !== null) {
       query.set("status", status);
     }
-    return request(`/api/tasks?${query.toString()}`);
+    return request("/api/tasks", undefined, query);
   },
 
   createTask: (payload: CreateTaskRequest): Promise<TaskDto> =>
     request("/api/tasks", { method: "POST", body: JSON.stringify(payload) }),
 
   cancelTask: (id: number): Promise<TaskDto> =>
-    request(`/api/tasks/${id}/cancel`, { method: "POST" }),
+    request(fill("/api/tasks/{id}/cancel", { id }), { method: "POST" }),
 
   retryTask: (id: number): Promise<TaskDto> =>
-    request(`/api/tasks/${id}/retry`, { method: "POST" }),
+    request(fill("/api/tasks/{id}/retry", { id }), { method: "POST" }),
 
-  taskLog: (id: number): Promise<TaskLogPage> => request(`/api/tasks/${id}/log`),
+  taskLog: (id: number): Promise<TaskLogPage> => request(fill("/api/tasks/{id}/log", { id })),
 
-  taskChildren: (id: number): Promise<TaskPage> => request(`/api/tasks/${id}/children`),
+  taskChildren: (id: number): Promise<TaskPage> =>
+    request(fill("/api/tasks/{id}/children", { id })),
 
   readConfig: (): Promise<SettingsDto> => request("/api/config"),
 
@@ -253,10 +293,13 @@ export const api = {
     request("/api/schedules", { method: "POST", body: JSON.stringify(payload) }),
 
   updateSchedule: (id: number, payload: UpdateScheduleRequest): Promise<ScheduleDto> =>
-    request(`/api/schedules/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+    request(fill("/api/schedules/{id}", { id }), {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
 
   deleteSchedule: (id: number): Promise<void> =>
-    requestVoid(`/api/schedules/${id}`, { method: "DELETE" }),
+    requestVoid(fill("/api/schedules/{id}", { id }), { method: "DELETE" }),
 
   listLibraries: (): Promise<LibraryPage> => request("/api/libraries"),
 
@@ -264,40 +307,39 @@ export const api = {
     request("/api/libraries", { method: "POST", body: JSON.stringify(payload) }),
 
   deleteLibrary: (id: number): Promise<void> =>
-    requestVoid(`/api/libraries/${id}`, { method: "DELETE" }),
+    requestVoid(fill("/api/libraries/{id}", { id }), { method: "DELETE" }),
 
   scanLibrary: (id: number): Promise<TaskDto> =>
-    request(`/api/libraries/${id}/scan`, { method: "POST" }),
+    request(fill("/api/libraries/{id}/scan", { id }), { method: "POST" }),
 
   libraryFiles: (id: number, kind: string | null): Promise<LibraryFilePage> => {
     const query = new URLSearchParams();
     if (kind !== null) {
       query.set("kind", kind);
     }
-    const suffix = query.size === 0 ? "" : `?${query.toString()}`;
-    return request(`/api/libraries/${id}/files${suffix}`);
+    return request(fill("/api/libraries/{id}/files", { id }), undefined, query);
   },
 
   organizePreview: (id: number): Promise<OrganizePreviewDto> =>
-    request(`/api/libraries/${id}/organize/preview`, { method: "POST" }),
+    request(fill("/api/libraries/{id}/organize/preview", { id }), { method: "POST" }),
 
   organizeExecute: (id: number, choices: Record<string, string>): Promise<TaskDto> =>
-    request(`/api/libraries/${id}/organize/execute`, {
+    request(fill("/api/libraries/{id}/organize/execute", { id }), {
       method: "POST",
       body: JSON.stringify({ choices }),
     }),
 
   cleanupManifest: (id: number): Promise<CleanupManifestDto> =>
-    request(`/api/libraries/${id}/cleanup`),
+    request(fill("/api/libraries/{id}/cleanup", { id })),
 
   cleanupExecute: (id: number): Promise<TaskDto> =>
-    request(`/api/libraries/${id}/cleanup/execute`, { method: "POST" }),
+    request(fill("/api/libraries/{id}/cleanup/execute", { id }), { method: "POST" }),
 
   trashListing: (id: number): Promise<TrashPageDto> =>
-    request(`/api/libraries/${id}/trash`),
+    request(fill("/api/libraries/{id}/trash", { id })),
 
   trashRestore: (id: number, path: string): Promise<TrashPageDto> =>
-    request(`/api/libraries/${id}/trash/restore`, {
+    request(fill("/api/libraries/{id}/trash/restore", { id }), {
       method: "POST",
       body: JSON.stringify({ path }),
     }),
