@@ -15,4 +15,4 @@ wreq = { version = "0.16", features = ["json"] }
 wreq-util = "0.2"
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util"] }

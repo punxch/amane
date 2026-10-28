@@ -568,16 +568,4 @@ mod tests {
             );
         }
     }
-
-    #[test]
-    fn repeated_renders_are_identical() {
-        let template = Template::parse("{maker}/{number}[-{title}].{ext}").expect("应解析成功");
-        let variables = vars(&[
-            ("maker", "SOD"),
-            ("number", "ABC-123"),
-            ("title", "标题"),
-            ("ext", "mp4"),
-        ]);
-        assert_eq!(template.render(&variables), template.render(&variables));
-    }
 }

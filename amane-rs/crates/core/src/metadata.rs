@@ -330,13 +330,28 @@ impl MetadataRepository {
     }
 
     /// 按番号写入或更新. 空字段保留既有值, 演员名单整体替换.
+    /// 创建或更新条目, 跳过被锁定的字段.
+    ///
+    /// 所有写入口都要过锁: 留一条不过锁的路径, 人工锁定的值就会被一次无关的写入冲掉.
     pub async fn upsert(
         &self,
         number: &MediaNumber,
         input: &MetadataInput<'_>,
     ) -> Result<Metadata, RepositoryError> {
         let mut transaction = self.database.write().begin().await?;
-        let row = upsert_row(&mut transaction, number, input).await?;
+
+        let existing_id: Option<i64> =
+            sqlx::query_scalar("SELECT id FROM metadata WHERE number = ?1")
+                .bind(number.as_str())
+                .fetch_optional(&mut *transaction)
+                .await?;
+        let locks = match existing_id {
+            Some(id) => read_locks(&mut transaction, id).await?,
+            None => BTreeSet::new(),
+        };
+
+        let effective = input.without_locked(&locks);
+        let row = upsert_row(&mut transaction, number, &effective).await?;
         transaction.commit().await?;
 
         Ok(row)
@@ -1109,6 +1124,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn upsert_respects_locks() {
+        let (_dir, repository) = repository().await;
+        let row = seeded_row(&repository, "人工标题").await;
+        repository
+            .set_lock(row.id, LockableField::Title, true)
+            .await
+            .expect("应加锁成功");
+        let number = MediaNumber::parse("ABC-001").expect("应解析成功");
+
+        let updated = repository
+            .upsert(&number, &input(Some("覆盖标题"), &[]))
+            .await
+            .expect("应写入成功");
+
+        assert_eq!(
+            updated.title.as_deref(),
+            Some("人工标题"),
+            "创建入口同样不能绕过锁"
+        );
+    }
+
+    #[tokio::test]
     async fn unlocked_field_is_overwritten() {
         let (_dir, repository) = repository().await;
         let number = MediaNumber::parse("ABC-001").expect("应解析成功");
@@ -1374,7 +1411,6 @@ mod tests {
                 .upsert(&number, &input(None, &[]))
                 .await
                 .expect("写入应成功");
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
 
         let rows = repository

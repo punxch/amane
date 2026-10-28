@@ -63,12 +63,12 @@ pub enum ItemOutcome {
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct ExecuteReport {
     pub moved: Vec<ItemOutcome>,
-    pub plans: Vec<OrganizePlanStub>,
+    pub plans: Vec<PlanRegistration>,
 }
 
 /// 执行成功后待登记的一条整理记录; 仓储写入由调用方完成.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OrganizePlanStub {
+pub struct PlanRegistration {
     pub path: String,
     pub number: String,
     pub source_path: String,
@@ -206,14 +206,20 @@ fn move_subtitles(
     target_rel: &str,
     subtitle_extensions: &[String],
 ) -> Result<Vec<String>, ExecuteError> {
+    // 与配置校验用同一个归一函数: 校验补前导点而这里只小写, 配置写 `srt` 就永远匹配不上.
     let extensions: Vec<String> = subtitle_extensions
         .iter()
-        .map(|e| e.to_lowercase())
+        .map(|value| crate::library::normalize_extension(value))
         .collect();
     if extensions.is_empty() {
         return Ok(Vec::new());
     }
     let source = root.join(&request.source_rel);
+    let source_stem = source
+        .file_stem()
+        .map(std::ffi::OsStr::to_string_lossy)
+        .unwrap_or_default()
+        .into_owned();
     let source_dir = match source.parent() {
         Some(dir) if dir != root => dir.to_path_buf(),
         // 根目录下的视频没有可归属的子目录, 仍按其父目录 (即根) 扫描.
@@ -245,7 +251,19 @@ fn move_subtitles(
         if !extensions.contains(&extension) {
             continue;
         }
-        let destination = target_dir.join(format!("{target_stem}{extension}"));
+
+        // 同目录可能有多个视频: 只搬主干与本视频一致的, 语言后缀 (video.zh.srt) 一并认.
+        let stem = path
+            .file_stem()
+            .map(std::ffi::OsStr::to_string_lossy)
+            .unwrap_or_default()
+            .into_owned();
+        if stem != source_stem && !stem.starts_with(&format!("{source_stem}.")) {
+            continue;
+        }
+        let suffix = &stem[source_stem.len()..];
+
+        let destination = target_dir.join(format!("{target_stem}{suffix}{extension}"));
         if destination.symlink_metadata().is_ok() {
             continue;
         }
@@ -333,7 +351,7 @@ pub fn execute_batch(
                 subtitles,
                 strm,
             }) => {
-                report.plans.push(OrganizePlanStub {
+                report.plans.push(PlanRegistration {
                     path: target.clone(),
                     number: request.number.clone(),
                     source_path: request.source_rel.clone(),
@@ -442,6 +460,73 @@ mod tests {
             "字幕重命名为主干 + 原扩展名"
         );
         assert!(!root.join("downloads/ABC-123.srt").exists(), "原字幕应消失");
+    }
+
+    #[test]
+    fn subtitles_of_other_videos_are_left_alone() {
+        let dir = tempfile::tempdir().expect("应创建临时目录");
+        let root = dir.path();
+        fs::create_dir_all(root.join("downloads")).expect("应创建目录");
+        fs::write(root.join("downloads/ABC-123.mp4"), b"v").expect("应写入视频");
+        fs::write(root.join("downloads/ABC-123.srt"), b"sub").expect("应写入字幕");
+        fs::write(root.join("downloads/ABC-123.zh.srt"), b"sub").expect("应写入语言字幕");
+        fs::write(root.join("downloads/ABC-456.srt"), b"other").expect("应写入他片字幕");
+
+        let outcome = execute_item(
+            root,
+            &request(
+                "downloads/ABC-123.mp4",
+                "ABC-123/ABC-123.mp4",
+                ConflictAction::Skip,
+            ),
+            &["srt".to_owned()],
+            false,
+        )
+        .expect("应执行成功");
+
+        let super::ItemOutcome::Moved { subtitles, .. } = outcome else {
+            panic!("应移动");
+        };
+        assert_eq!(subtitles.len(), 2, "只搬本视频的两条字幕");
+        assert!(
+            root.join("ABC-123/ABC-123.srt").exists()
+                && root.join("ABC-123/ABC-123.zh.srt").exists(),
+            "语言后缀应保留"
+        );
+        assert!(
+            root.join("downloads/ABC-456.srt").exists(),
+            "同目录其它视频的字幕不能被搬走"
+        );
+    }
+
+    #[test]
+    fn subtitle_extensions_without_leading_dot_still_match() {
+        let dir = tempfile::tempdir().expect("应创建临时目录");
+        let root = dir.path();
+        fs::create_dir_all(root.join("downloads")).expect("应创建目录");
+        fs::write(root.join("downloads/ABC-123.mp4"), b"v").expect("应写入视频");
+        fs::write(root.join("downloads/ABC-123.SRT"), b"sub").expect("应写入字幕");
+
+        let outcome = execute_item(
+            root,
+            &request(
+                "downloads/ABC-123.mp4",
+                "ABC-123/ABC-123.mp4",
+                ConflictAction::Skip,
+            ),
+            &["srt".to_owned()],
+            false,
+        )
+        .expect("应执行成功");
+
+        let super::ItemOutcome::Moved { subtitles, .. } = outcome else {
+            panic!("应移动");
+        };
+        assert_eq!(
+            subtitles.len(),
+            1,
+            "配置写 `srt` 时也要匹配: 校验会补前导点, 执行必须用同一套归一"
+        );
     }
 
     #[test]

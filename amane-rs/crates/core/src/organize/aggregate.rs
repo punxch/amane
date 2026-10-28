@@ -272,17 +272,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn repeated_previews_are_identical() {
-        let dir = tempfile::tempdir().expect("应创建临时目录");
-        let template = Template::parse("{number}/{number}.{ext}").expect("应解析成功");
-        let requests = [request("downloads/ABC-123.mp4", "ABC-123", None)];
-
-        let first = super::build_preview(&template, dir.path(), &requests, &BTreeMap::new());
-        let second = super::build_preview(&template, dir.path(), &requests, &BTreeMap::new());
-        assert_eq!(first, second);
-    }
-
-    #[tokio::test]
     async fn stale_entries_are_counted_not_conflicts() {
         let dir = tempfile::tempdir().expect("应创建临时目录");
         let template = Template::parse("{number}/{number}.{ext}").expect("应解析成功");

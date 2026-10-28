@@ -43,19 +43,6 @@ pub struct PreviewItem {
     pub conflict: Option<ConflictKind>,
 }
 
-/// 整理登记: 一次执行写入一行, 预览据此判「同名不同番号」.
-#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow, Serialize)]
-pub struct OrganizePlan {
-    pub id: i64,
-    pub root_id: i64,
-    /// 目标视频路径, 相对库根的 POSIX 路径.
-    pub path: String,
-    pub number: String,
-    /// 执行时的源路径; 清理与回收切片据此回溯.
-    pub source_path: String,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-}
-
 /// 渲染目标所需的全部输入. 条目可以缺席: 缺席时只有番号参与渲染.
 #[derive(Debug, Clone)]
 pub struct TargetContext<'a> {
@@ -72,7 +59,6 @@ pub struct TargetContext<'a> {
 /// 变量值已经过 Windows 非法字符清洗; 缺席字段输出空串, 由可选组折叠.
 pub fn variables_for(context: &TargetContext) -> BTreeMap<String, String> {
     let mut variables = BTreeMap::new();
-    let _empty = "";
     let entry = context.entry;
     variables.insert("number".to_owned(), context.number.to_owned());
     variables.insert(

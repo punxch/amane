@@ -20,6 +20,15 @@ pub enum TaskKind {
 }
 
 impl TaskKind {
+    /// 全部取值. `as_str` 是唯一的字符串表, 解析从这里反查.
+    pub const ALL: [Self; 5] = [
+        Self::Scrape,
+        Self::Scan,
+        Self::Organize,
+        Self::Refresh,
+        Self::Cleanup,
+    ];
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Scrape => "scrape",
@@ -29,19 +38,10 @@ impl TaskKind {
             Self::Cleanup => "cleanup",
         }
     }
-}
 
-impl TaskKind {
     /// 由外部字符串还原; 未知取值返回 `None`, 由调用方决定如何报错.
     pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "scrape" => Some(Self::Scrape),
-            "scan" => Some(Self::Scan),
-            "organize" => Some(Self::Organize),
-            "refresh" => Some(Self::Refresh),
-            "cleanup" => Some(Self::Cleanup),
-            _ => None,
-        }
+        Self::ALL.into_iter().find(|kind| kind.as_str() == value)
     }
 }
 
@@ -66,15 +66,19 @@ pub enum TaskStatus {
 }
 
 impl TaskStatus {
+    /// 全部取值. `as_str` 是唯一的字符串表, 解析从这里反查.
+    pub const ALL: [Self; 5] = [
+        Self::Queued,
+        Self::Running,
+        Self::Done,
+        Self::Failed,
+        Self::Cancelled,
+    ];
+
     pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "queued" => Some(Self::Queued),
-            "running" => Some(Self::Running),
-            "done" => Some(Self::Done),
-            "failed" => Some(Self::Failed),
-            "cancelled" => Some(Self::Cancelled),
-            _ => None,
-        }
+        Self::ALL
+            .into_iter()
+            .find(|status| status.as_str() == value)
     }
 
     pub const fn as_str(self) -> &'static str {

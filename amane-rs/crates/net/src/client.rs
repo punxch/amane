@@ -124,6 +124,8 @@ impl WebClient {
 
     pub async fn get_text(&self, url: &str) -> Result<String, NetError> {
         let response = self.get(url).await?;
+        // 非成功状态不是正文: 把 5xx 错误页当页面解析, 会变成「结构读不懂」而不是「请求失败」.
+        ensure_success(url, &response)?;
         response
             .text()
             .await
@@ -367,5 +369,41 @@ mod tests {
             other => panic!("全档位被拒时必须报 Rejected, 实际 {other:?}"),
         }
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn error_status_is_not_returned_as_body() {
+        let (url, server) = spawn_status_stub("500 Internal Server Error").await;
+        let client = client_with(5, 20.0);
+
+        let result = client.get_text(&url).await;
+
+        match result {
+            Err(NetError::Status { status, .. }) => assert_eq!(status, 500),
+            other => panic!("5xx 不能当作正文返回, 实际 {other:?}"),
+        }
+        server.abort();
+    }
+
+    /// 固定返回一个状态码的桩.
+    async fn spawn_status_stub(status: &'static str) -> (String, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("应绑定端口");
+        let address = listener.local_addr().expect("应取得地址");
+        let handle = tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buffer = [0_u8; 1024];
+                let _ = socket.read(&mut buffer).await;
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: text/html\r\ncontent-length: 16\r\nconnection: close\r\n\r\n<html>维护中</html>"
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+
+        (format!("http://{address}/"), handle)
     }
 }

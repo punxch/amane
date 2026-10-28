@@ -40,15 +40,17 @@ pub enum ScanKind {
 }
 
 impl ScanKind {
+    /// 全部取值. `as_str` 是唯一的字符串表, 解析从这里反查.
+    pub const ALL: [Self; 5] = [
+        Self::Media,
+        Self::Unwanted,
+        Self::System,
+        Self::Unrecognized,
+        Self::LeftoverDir,
+    ];
+
     pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "media" => Some(Self::Media),
-            "unwanted" => Some(Self::Unwanted),
-            "system" => Some(Self::System),
-            "unrecognized" => Some(Self::Unrecognized),
-            "leftover_dir" => Some(Self::LeftoverDir),
-            _ => None,
-        }
+        Self::ALL.into_iter().find(|kind| kind.as_str() == value)
     }
 
     pub const fn as_str(self) -> &'static str {

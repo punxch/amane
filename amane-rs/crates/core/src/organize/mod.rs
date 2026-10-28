@@ -15,7 +15,7 @@ pub use cleanup::{
 };
 pub use execute::{
     ConflictAction, DEFAULT_SUBTITLE_EXTENSIONS, ExecuteError, ExecuteRequest, ItemOutcome,
-    OrganizePlanStub, TRASH_DIRNAME, execute_batch, execute_item, move_to_trash, rename_candidate,
+    PlanRegistration, TRASH_DIRNAME, execute_batch, execute_item, move_to_trash, rename_candidate,
 };
 pub use model::OrganizePlan;
 pub use preview::{
