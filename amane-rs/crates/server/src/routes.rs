@@ -123,6 +123,14 @@ pub async fn get_metadata(
 
     let mut dto = MetadataDto::from(row);
     dto.actors = state.runtime.metadata.actors(dto.id).await?;
+    dto.sources = state
+        .runtime
+        .metadata
+        .snapshots(dto.id)
+        .await?
+        .into_iter()
+        .map(|(source_id, _payload)| source_id)
+        .collect();
 
     Ok(Json(dto))
 }

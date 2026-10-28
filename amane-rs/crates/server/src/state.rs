@@ -62,7 +62,10 @@ impl Runtime {
             ResourceRepository::new(database.clone()),
             Arc::clone(&client),
         ));
-        let sources = Arc::new(Registry::builtin(client));
+        let mut registry = Registry::builtin(client);
+        // 热配置里的来源顺序即聚合优先级; 为空表示保持内置顺序.
+        registry.reorder(&settings.hot.enabled_sources);
+        let sources = Arc::new(registry);
         let handlers: Vec<Arc<dyn TaskHandler>> = vec![ScrapeHandler::new(
             Arc::clone(&sources),
             metadata.clone(),

@@ -24,6 +24,10 @@ pub struct MetadataDto {
     pub poster_local_url: Option<String>,
     /// 演员名单; 列表端点不返回, 只有详情端点填充.
     pub actors: Vec<String>,
+    /// 本次刮削命中的来源标识; 只有详情端点填充.
+    pub sources: Vec<String>,
+    /// 字段名 → 贡献该字段的来源标识.
+    pub field_sources: std::collections::BTreeMap<String, String>,
     /// 条目类型, 取值见 `ContentType`.
     pub content_type: String,
     pub created_at: DateTime<Utc>,
@@ -47,6 +51,12 @@ impl From<Metadata> for MetadataDto {
                 .poster_resource_id
                 .map(|id| format!("/api/resources/{id}")),
             actors: Vec::new(),
+            sources: Vec::new(),
+            field_sources: value
+                .field_sources
+                .as_deref()
+                .and_then(|raw| serde_json::from_str(raw).ok())
+                .unwrap_or_default(),
             content_type: value.content_type.as_str().to_owned(),
             created_at: value.created_at,
             updated_at: value.updated_at,

@@ -9,7 +9,7 @@ use amane_core::{
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use amane_crawlers::{Capability, Registry};
+use amane_crawlers::{Capability, Registry, ScrapedMetadata, aggregate};
 
 use crate::resource::ResourceStore;
 
@@ -56,18 +56,27 @@ impl TaskHandler for ScrapeHandler {
 
         context.logger.info(format!("开始刮削 {number}")).await;
 
-        let mut hits = 0;
-        let mut first_hit: Option<amane_crawlers::ScrapedMetadata> = None;
-        for source in self.sources.with_capability(Capability::Metadata) {
+        let candidates: Vec<&dyn amane_crawlers::Source> =
+            self.sources.with_capability(Capability::Metadata).collect();
+        if candidates.is_empty() {
+            context.logger.error("没有可用的来源").await;
+            return Err(TaskError::Failed("没有可用的来源".to_owned()));
+        }
+
+        // 并行请求: 单源失败不影响其它来源, 总耗时接近最慢来源.
+        let fetched = futures::future::join_all(candidates.iter().map(|source| async {
+            let id = source.descriptor().id;
+            (id, source.fetch(&number).await)
+        }))
+        .await;
+
+        let mut hits: Vec<(&str, ScrapedMetadata)> = Vec::new();
+        for (id, result) in fetched {
             if context.cancel.is_cancelled() {
                 return Err(TaskError::Cancelled);
             }
-
-            let id = source.descriptor().id;
-            context.logger.info(format!("请求来源 {id}")).await;
-            match source.fetch(&number).await {
+            match result {
                 Ok(scraped) => {
-                    hits += 1;
                     context
                         .logger
                         .info(format!(
@@ -75,9 +84,7 @@ impl TaskHandler for ScrapeHandler {
                             scraped.title.as_deref().unwrap_or("无标题")
                         ))
                         .await;
-                    if first_hit.is_none() {
-                        first_hit = Some(scraped);
-                    }
+                    hits.push((id, scraped));
                 }
                 Err(error) => {
                     context
@@ -88,15 +95,13 @@ impl TaskHandler for ScrapeHandler {
             }
         }
 
-        if hits == 0 {
+        if hits.is_empty() {
             context.logger.error("没有来源返回结果").await;
             return Err(TaskError::Failed("没有来源返回结果".to_owned()));
         }
 
-        let Some(scraped) = first_hit else {
-            return Err(TaskError::Failed("没有可写入的结果".to_owned()));
-        };
-
+        let merged = aggregate(&hits);
+        let scraped = merged.metadata.clone();
         let input = MetadataInput {
             title: scraped.title.as_deref(),
             plot: scraped.plot.as_deref(),
@@ -118,6 +123,24 @@ impl TaskHandler for ScrapeHandler {
             .logger
             .info(format!("写入番号条目 {}", row.number))
             .await;
+
+        // 快照与字段来源用于回溯: 某个字段是从哪个来源来的, 以及各来源当时返回了什么.
+        let snapshots: Vec<(String, String)> = hits
+            .iter()
+            .filter_map(|(id, scraped)| {
+                serde_json::to_string(scraped)
+                    .ok()
+                    .map(|payload| ((*id).to_owned(), payload))
+            })
+            .collect();
+        self.metadata
+            .replace_snapshots(row.id, &snapshots)
+            .await
+            .map_err(|error| TaskError::Failed(format!("写入来源快照失败: {error}")))?;
+        self.metadata
+            .set_field_sources(row.id, &merged.field_sources_json().to_string())
+            .await
+            .map_err(|error| TaskError::Failed(format!("写入字段来源失败: {error}")))?;
 
         // 上游问题 (下载失败) 只告警; 本地写库失败才判任务失败.
         if let Some(url) = scraped.poster_url.as_deref() {
@@ -279,7 +302,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fails_when_no_source_answers() {
+    async fn fails_when_no_source_registered() {
         let fixture = fixture(Vec::new()).await;
 
         let result = run(
@@ -290,8 +313,29 @@ mod tests {
         .await;
 
         match result {
+            Err(TaskError::Failed(message)) => assert!(message.contains("没有可用的来源")),
+            _ => panic!("没有来源时必须失败并说明原因"),
+        }
+    }
+
+    #[tokio::test]
+    async fn fails_when_every_source_errors() {
+        let fixture = fixture(vec![
+            source("a", Some("忽略"), true),
+            source("b", Some("忽略"), true),
+        ])
+        .await;
+
+        let result = run(
+            &fixture.handler,
+            fixture.dir.path(),
+            serde_json::json!({ "number": "ABC-123" }),
+        )
+        .await;
+
+        match result {
             Err(TaskError::Failed(message)) => assert!(message.contains("没有来源返回结果")),
-            _ => panic!("无来源时必须失败并说明原因"),
+            _ => panic!("所有来源失败时必须失败并说明原因"),
         }
     }
 

@@ -3,9 +3,13 @@
 //! 来源全部编译进二进制, 不加载外部插件. 新增站点只需实现 [`Source`] 并登记到 [`Registry`],
 //! 宿主与前端不感知具体站点.
 
+pub mod aggregate;
 pub mod dmm;
+pub mod javdb;
 
+pub use aggregate::{Aggregated, aggregate};
 pub use dmm::DmmSource;
+pub use javdb::JavdbSource;
 
 use std::sync::Arc;
 
@@ -84,7 +88,10 @@ impl Registry {
 
     /// 内置来源. 站点实现在各自的切片中登记, 这里保持唯一的装配点.
     pub fn builtin(client: Arc<WebClient>) -> Self {
-        Self::new(vec![Box::new(DmmSource::new(client))])
+        Self::new(vec![
+            Box::new(DmmSource::new(Arc::clone(&client))),
+            Box::new(JavdbSource::new(client)),
+        ])
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &dyn Source> {
@@ -97,6 +104,22 @@ impl Registry {
 
     pub fn is_empty(&self) -> bool {
         self.sources.is_empty()
+    }
+
+    /// 按给定的标识顺序重排来源; 未列出的来源排在最后并保持原有相对顺序.
+    pub fn reorder(&mut self, order: &[String]) {
+        if order.is_empty() {
+            return;
+        }
+
+        let rank = |id: &str| {
+            order
+                .iter()
+                .position(|candidate| candidate == id)
+                .unwrap_or(usize::MAX)
+        };
+        self.sources
+            .sort_by_key(|source| rank(source.descriptor().id));
     }
 
     /// 按声明能力筛选来源.
@@ -164,6 +187,38 @@ mod tests {
     }
 
     #[test]
+    fn reorder_follows_configured_priority() {
+        let mut registry = Registry::new(vec![
+            stub("first", &[Capability::Metadata]),
+            stub("second", &[Capability::Metadata]),
+        ]);
+
+        registry.reorder(&["second".to_owned(), "first".to_owned()]);
+
+        let ids: Vec<&str> = registry
+            .iter()
+            .map(|source| source.descriptor().id)
+            .collect();
+        assert_eq!(ids, ["second", "first"], "配置的顺序应决定聚合优先级");
+    }
+
+    #[test]
+    fn empty_order_keeps_registry_order() {
+        let mut registry = Registry::new(vec![
+            stub("first", &[Capability::Metadata]),
+            stub("second", &[Capability::Metadata]),
+        ]);
+
+        registry.reorder(&[]);
+
+        let ids: Vec<&str> = registry
+            .iter()
+            .map(|source| source.descriptor().id)
+            .collect();
+        assert_eq!(ids, ["first", "second"]);
+    }
+
+    #[test]
     fn builtin_registers_every_site() {
         let client = std::sync::Arc::new(
             amane_net::WebClient::new(
@@ -178,6 +233,6 @@ mod tests {
             .iter()
             .map(|source| source.descriptor().id)
             .collect();
-        assert_eq!(ids, ["dmm"]);
+        assert_eq!(ids, ["dmm", "javdb"], "顺序即聚合优先级");
     }
 }

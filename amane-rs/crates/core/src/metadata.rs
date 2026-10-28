@@ -22,6 +22,8 @@ pub struct Metadata {
     pub poster_url: Option<String>,
     /// 海报存到本地后的资源标识; 为 `None` 时详情页只能引用远端地址.
     pub poster_resource_id: Option<i64>,
+    /// 字段来源表, JSON 文本; 键是字段名, 值是来源标识.
+    pub field_sources: Option<String>,
     pub content_type: ContentType,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -165,6 +167,66 @@ impl MetadataRepository {
         .await?;
 
         Ok(names)
+    }
+
+    /// 记录字段来源.
+    pub async fn set_field_sources(
+        &self,
+        metadata_id: i64,
+        field_sources: &str,
+    ) -> Result<(), RepositoryError> {
+        sqlx::query("UPDATE metadata SET field_sources = ?1 WHERE id = ?2")
+            .bind(field_sources)
+            .bind(metadata_id)
+            .execute(self.database.write())
+            .await?;
+
+        Ok(())
+    }
+
+    /// 用本次刮削的结果整体替换分站快照.
+    pub async fn replace_snapshots(
+        &self,
+        metadata_id: i64,
+        snapshots: &[(String, String)],
+    ) -> Result<(), RepositoryError> {
+        let mut transaction = self.database.write().begin().await?;
+        let now = Utc::now();
+
+        sqlx::query("DELETE FROM source_snapshot WHERE metadata_id = ?1")
+            .bind(metadata_id)
+            .execute(&mut *transaction)
+            .await?;
+
+        for (source_id, payload) in snapshots {
+            sqlx::query(
+                "INSERT INTO source_snapshot (metadata_id, source_id, payload, fetched_at) VALUES (?1, ?2, ?3, ?4)",
+            )
+            .bind(metadata_id)
+            .bind(source_id)
+            .bind(payload)
+            .bind(now)
+            .execute(&mut *transaction)
+            .await?;
+        }
+
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    /// 条目的各来源快照, 按来源标识排序.
+    pub async fn snapshots(
+        &self,
+        metadata_id: i64,
+    ) -> Result<Vec<(String, String)>, RepositoryError> {
+        let rows = sqlx::query_as::<_, (String, String)>(
+            "SELECT source_id, payload FROM source_snapshot WHERE metadata_id = ?1 ORDER BY source_id ASC",
+        )
+        .bind(metadata_id)
+        .fetch_all(self.database.read())
+        .await?;
+
+        Ok(rows)
     }
 
     /// 把条目指向一条资源. 资源表由资源仓储维护, 这里只写元数据侧的引用.

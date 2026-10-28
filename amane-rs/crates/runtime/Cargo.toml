@@ -8,6 +8,7 @@ rust-version.workspace = true
 [dependencies]
 amane-core.workspace = true
 chrono.workspace = true
+futures.workspace = true
 amane-crawlers.workspace = true
 amane-net.workspace = true
 async-trait.workspace = true

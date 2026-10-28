@@ -196,6 +196,20 @@ onMounted(refresh);
           >
             海报尚未存到本地: {{ detail.poster_url }}
           </p>
+
+          <div v-if="detail.sources.length > 0" class="mt-3 border-t border-neutral-800/60 pt-2">
+            <p class="text-xs text-neutral-600">来源: {{ detail.sources.join(" / ") }}</p>
+            <dl class="mt-1 space-y-0.5 font-mono text-[11px] text-neutral-500">
+              <div
+                v-for="(source, field) in detail.field_sources"
+                :key="field"
+                class="flex justify-between gap-3"
+              >
+                <dt>{{ field }}</dt>
+                <dd>{{ source }}</dd>
+              </div>
+            </dl>
+          </div>
         </section>
 
         <form

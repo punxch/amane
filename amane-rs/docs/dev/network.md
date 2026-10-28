@@ -19,6 +19,7 @@
 | `javdb.com` | 正常页面, 未触发轮换 | 指纹方案对 Cloudflare 有效, 可作为首批来源 |
 | `www.dmm.co.jp` | 302 跳转到 fanza | 页面路径受地区限制, dmm 只能走 API |
 | `javbus.com` | 空响应 | 需要 cookie 或另有路径, 逐站点确认 |
+| `javdb.com` 详情页 | 面板标签随语言变化 (中文为「番號」, English 为 `ID`) | 解析需同时接受两套标签 |
 
 结论: 指纹方案可行, 不阻塞首批站点; dmm 的取数路径改为 API, 与页面型来源分开实现。
 
