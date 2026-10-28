@@ -210,46 +210,62 @@ pub struct MetadataInput<'a> {
     pub actors: Option<&'a [String]>,
 }
 
+/// 一个可锁字段在本次输入里的取值形态.
+///
+/// 三类列各有自己的类型; 取值的「有没有」与「被锁定」都从这一处读, 两处判断不会各说各话.
+enum Slot<'a> {
+    Text(Option<&'a str>),
+    Date(Option<NaiveDate>),
+    Number(Option<i32>),
+}
+
+impl Slot<'_> {
+    fn is_present(&self) -> bool {
+        match self {
+            Self::Text(value) => value.is_some(),
+            Self::Date(value) => value.is_some(),
+            Self::Number(value) => value.is_some(),
+        }
+    }
+}
+
 impl MetadataInput<'_> {
+    /// 该字段在本次输入里的取值形态.
+    fn slot(&self, field: LockableField) -> Slot<'_> {
+        match field {
+            LockableField::Title => Slot::Text(self.title),
+            LockableField::Plot => Slot::Text(self.plot),
+            LockableField::ReleaseDate => Slot::Date(self.release_date),
+            LockableField::RuntimeMinutes => Slot::Number(self.runtime_minutes),
+            LockableField::Maker => Slot::Text(self.maker),
+            LockableField::Label => Slot::Text(self.label),
+            LockableField::Series => Slot::Text(self.series),
+            LockableField::PosterUrl => Slot::Text(self.poster_url),
+        }
+    }
+
     /// 本次输入是否带有该字段的值. 用于区分「因锁定而保留」与「本次本来就没提供」.
     pub fn has_value(&self, field: LockableField) -> bool {
-        match field {
-            LockableField::Title => self.title.is_some(),
-            LockableField::Plot => self.plot.is_some(),
-            LockableField::ReleaseDate => self.release_date.is_some(),
-            LockableField::RuntimeMinutes => self.runtime_minutes.is_some(),
-            LockableField::Maker => self.maker.is_some(),
-            LockableField::Label => self.label.is_some(),
-            LockableField::Series => self.series.is_some(),
-            LockableField::PosterUrl => self.poster_url.is_some(),
-        }
+        self.slot(field).is_present()
     }
 }
 
 impl<'a> MetadataInput<'a> {
     /// 去掉被锁定字段后的输入. 锁定的字段以 `None` 参与写入, 由 `COALESCE` 保留原值.
     pub fn without_locked(&self, locks: &BTreeSet<LockableField>) -> Self {
-        fn keep<'value>(
+        fn keep<T>(
             locks: &BTreeSet<LockableField>,
             field: LockableField,
-            value: Option<&'value str>,
-        ) -> Option<&'value str> {
+            value: Option<T>,
+        ) -> Option<T> {
             if locks.contains(&field) { None } else { value }
         }
 
         Self {
             title: keep(locks, LockableField::Title, self.title),
             plot: keep(locks, LockableField::Plot, self.plot),
-            release_date: if locks.contains(&LockableField::ReleaseDate) {
-                None
-            } else {
-                self.release_date
-            },
-            runtime_minutes: if locks.contains(&LockableField::RuntimeMinutes) {
-                None
-            } else {
-                self.runtime_minutes
-            },
+            release_date: keep(locks, LockableField::ReleaseDate, self.release_date),
+            runtime_minutes: keep(locks, LockableField::RuntimeMinutes, self.runtime_minutes),
             maker: keep(locks, LockableField::Maker, self.maker),
             label: keep(locks, LockableField::Label, self.label),
             series: keep(locks, LockableField::Series, self.series),
@@ -306,6 +322,16 @@ fn merge_sources(
     let mut merged = existing.cloned().unwrap_or_default();
     merged.merge(updates, locked);
     merged
+}
+
+/// 一次修订里要写的一列.
+///
+/// 列名与字段成对出现, 写列与登记 `touched` 由同一处产生.
+enum Column<'a> {
+    Text(&'static str, LockableField, Option<&'a str>),
+    Number(&'static str, LockableField, Option<i32>),
+    /// 可写但不可锁的列 (备注).
+    Plain(&'static str, Option<&'a str>),
 }
 
 /// 写入或更新一行, 调用方负责事务边界.
@@ -704,58 +730,61 @@ impl MetadataRepository {
             )),
         };
 
+        // 列名、字段与取值放在一处: 赋值与 `touched` 由同一个循环产生, 不会一边写列一边漏记字段.
+        let columns = [
+            Column::Text("title", LockableField::Title, patch.title),
+            Column::Text("plot", LockableField::Plot, patch.plot),
+            Column::Text("maker", LockableField::Maker, patch.maker),
+            Column::Text("label", LockableField::Label, patch.label),
+            Column::Text("series", LockableField::Series, patch.series),
+            Column::Number(
+                "runtime_minutes",
+                LockableField::RuntimeMinutes,
+                patch.runtime_minutes,
+            ),
+            // 备注可写但不可锁.
+            Column::Plain("note", patch.note),
+        ];
+
         let mut touched: Vec<LockableField> = Vec::new();
         let mut builder = QueryBuilder::<Sqlite>::new("UPDATE metadata SET ");
         {
             let mut assignments = builder.separated(", ");
 
-            if let Some(value) = patch.title {
-                assignments
-                    .push("title = ")
-                    .push_bind_unseparated(blank_to_none(value));
-                touched.push(LockableField::Title);
-            }
-            if let Some(value) = patch.plot {
-                assignments
-                    .push("plot = ")
-                    .push_bind_unseparated(blank_to_none(value));
-                touched.push(LockableField::Plot);
-            }
+            // 上映日期可以显式清空: `Some(None)` 表示写 NULL, 与其余列的「不提供即不改」不同.
             if let Some(date) = release_date {
                 assignments
                     .push("release_date = ")
                     .push_bind_unseparated(date);
                 touched.push(LockableField::ReleaseDate);
             }
-            if let Some(minutes) = patch.runtime_minutes {
-                assignments
-                    .push("runtime_minutes = ")
-                    .push_bind_unseparated(minutes);
-                touched.push(LockableField::RuntimeMinutes);
+
+            for column in columns {
+                match column {
+                    Column::Text(key, field, Some(value)) => {
+                        assignments
+                            .push(key)
+                            .push_unseparated(" = ")
+                            .push_bind_unseparated(blank_to_none(value));
+                        touched.push(field);
+                    }
+                    Column::Number(key, field, Some(value)) => {
+                        assignments
+                            .push(key)
+                            .push(" = ")
+                            .push_bind_unseparated(value);
+                        touched.push(field);
+                    }
+                    Column::Plain(key, Some(value)) => {
+                        assignments
+                            .push(key)
+                            .push_unseparated(" = ")
+                            .push_bind_unseparated(blank_to_none(value));
+                    }
+                    Column::Text(..) | Column::Number(..) | Column::Plain(..) => {}
+                }
             }
-            if let Some(value) = patch.maker {
-                assignments
-                    .push("maker = ")
-                    .push_bind_unseparated(blank_to_none(value));
-                touched.push(LockableField::Maker);
-            }
-            if let Some(value) = patch.label {
-                assignments
-                    .push("label = ")
-                    .push_bind_unseparated(blank_to_none(value));
-                touched.push(LockableField::Label);
-            }
-            if let Some(value) = patch.series {
-                assignments
-                    .push("series = ")
-                    .push_bind_unseparated(blank_to_none(value));
-                touched.push(LockableField::Series);
-            }
-            if let Some(value) = patch.note {
-                assignments
-                    .push("note = ")
-                    .push_bind_unseparated(blank_to_none(value));
-            }
+
             assignments
                 .push("updated_at = ")
                 .push_bind_unseparated(Utc::now());
@@ -1265,6 +1294,57 @@ mod tests {
         let result = repository.delete(&number).await;
 
         assert!(matches!(result, Err(RepositoryError::NotFound)));
+    }
+
+    #[tokio::test]
+    async fn every_text_field_is_locked_by_manual_edit() {
+        let (_dir, repository) = repository().await;
+        let number = MediaNumber::parse("ABC-008").expect("应解析成功");
+        let row = repository
+            .upsert(&number, &MetadataInput::default())
+            .await
+            .expect("应写入成功");
+
+        repository
+            .update_fields(
+                &number,
+                &MetadataPatch {
+                    title: Some("标题"),
+                    plot: Some("简介"),
+                    maker: Some("片商"),
+                    label: Some("厂牌"),
+                    series: Some("系列"),
+                    ..MetadataPatch::default()
+                },
+            )
+            .await
+            .expect("应修订成功");
+
+        // 列清单与 `touched` 由同一个循环产生: 漏登记任何一个字段都会在这里暴露.
+        let locks = repository.locks(row.id).await.expect("应查询成功");
+        let sources = repository
+            .find(&number)
+            .await
+            .expect("应查询成功")
+            .expect("应存在")
+            .field_sources
+            .as_ref()
+            .map(|json| json.0.to_map())
+            .expect("应有字段来源");
+        for field in [
+            LockableField::Title,
+            LockableField::Plot,
+            LockableField::Maker,
+            LockableField::Label,
+            LockableField::Series,
+        ] {
+            assert!(locks.contains(&field), "{field} 应被加锁");
+            assert_eq!(
+                sources.get(field.as_str()).map(String::as_str),
+                Some(MANUAL_SOURCE),
+                "{field} 的来源应记为人工"
+            );
+        }
     }
 
     #[tokio::test]

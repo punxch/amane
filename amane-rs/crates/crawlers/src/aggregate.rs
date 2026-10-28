@@ -2,6 +2,8 @@
 
 use std::collections::BTreeMap;
 
+use amane_core::LockableField;
+
 use crate::ScrapedMetadata;
 
 /// 聚合结果.
@@ -24,38 +26,58 @@ pub fn aggregate(items: &[(&str, ScrapedMetadata)]) -> Aggregated {
     let mut merged = Aggregated::default();
 
     for (source, scraped) in items {
-        take_scalar(&mut merged, "title", source, &scraped.title, |metadata| {
-            &mut metadata.title
-        });
-        take_scalar(&mut merged, "plot", source, &scraped.plot, |metadata| {
-            &mut metadata.plot
-        });
         take_scalar(
             &mut merged,
-            "release_date",
+            LockableField::Title.as_str(),
+            source,
+            &scraped.title,
+            |metadata| &mut metadata.title,
+        );
+        take_scalar(
+            &mut merged,
+            LockableField::Plot.as_str(),
+            source,
+            &scraped.plot,
+            |metadata| &mut metadata.plot,
+        );
+        take_scalar(
+            &mut merged,
+            LockableField::ReleaseDate.as_str(),
             source,
             &scraped.release_date,
             |metadata| &mut metadata.release_date,
         );
         take_scalar(
             &mut merged,
-            "runtime_minutes",
+            LockableField::RuntimeMinutes.as_str(),
             source,
             &scraped.runtime_minutes,
             |metadata| &mut metadata.runtime_minutes,
         );
-        take_scalar(&mut merged, "maker", source, &scraped.maker, |metadata| {
-            &mut metadata.maker
-        });
-        take_scalar(&mut merged, "label", source, &scraped.label, |metadata| {
-            &mut metadata.label
-        });
-        take_scalar(&mut merged, "series", source, &scraped.series, |metadata| {
-            &mut metadata.series
-        });
         take_scalar(
             &mut merged,
-            "poster_url",
+            LockableField::Maker.as_str(),
+            source,
+            &scraped.maker,
+            |metadata| &mut metadata.maker,
+        );
+        take_scalar(
+            &mut merged,
+            LockableField::Label.as_str(),
+            source,
+            &scraped.label,
+            |metadata| &mut metadata.label,
+        );
+        take_scalar(
+            &mut merged,
+            LockableField::Series.as_str(),
+            source,
+            &scraped.series,
+            |metadata| &mut metadata.series,
+        );
+        take_scalar(
+            &mut merged,
+            LockableField::PosterUrl.as_str(),
             source,
             &scraped.poster_url,
             |metadata| &mut metadata.poster_url,
