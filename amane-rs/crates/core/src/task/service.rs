@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::handler::{TaskContext, TaskError, TaskHandler, TaskOutcome};
 use super::logger::TaskLogger;
-use super::model::{Task, TaskKind, TaskSpec};
+use super::model::{Task, TaskKind, TaskPayload, TaskSpec};
 use super::repository::{TaskRepository, TaskRepositoryError};
 
 /// 队列空闲时的轮询间隔. 入队会主动唤醒, 这里只兜底处理重启遗留与时间推进.
@@ -234,8 +234,10 @@ impl TaskService {
             )));
         };
 
-        let payload = serde_json::from_str(&task.payload)
+        let body = serde_json::from_str(&task.payload)
             .map_err(|error| TaskError::Failed(format!("任务载荷不是合法 JSON: {error}")))?;
+        let payload = TaskPayload::parse(task.kind, body)
+            .map_err(|error| TaskError::Failed(error.to_string()))?;
         let context = TaskContext {
             task_id: task.id,
             payload,
@@ -265,7 +267,8 @@ mod tests {
     use crate::db::Database;
     use crate::task::repository::TaskRepository;
     use crate::task::{
-        Task, TaskContext, TaskError, TaskHandler, TaskKind, TaskOutcome, TaskSpec, TaskStatus,
+        Task, TaskContext, TaskError, TaskHandler, TaskKind, TaskOutcome, TaskPayload, TaskSpec,
+        TaskStatus,
     };
 
     type Run = Box<dyn Fn(TaskContext) -> BoxFuture + Send + Sync>;
@@ -333,7 +336,9 @@ mod tests {
     }
 
     fn scrape(number: &str) -> TaskSpec {
-        TaskSpec::new(TaskKind::Scrape, serde_json::json!({ "number": number }))
+        TaskSpec::new(TaskPayload::Scrape {
+            number: number.to_owned(),
+        })
     }
 
     async fn wait_terminal(repository: &TaskRepository, id: i64) -> Task {
@@ -564,8 +569,10 @@ mod tests {
     async fn followups_are_enqueued_on_completion() {
         let handler = FnHandler::new(TaskKind::Scrape, |_context| async {
             Ok(TaskOutcome::with_followups(vec![TaskSpec::new(
-                TaskKind::Organize,
-                serde_json::json!({ "number": "ABC-001" }),
+                TaskPayload::Organize {
+                    library_id: 1,
+                    choices: std::collections::BTreeMap::new(),
+                },
             )]))
         });
         let harness = harness(vec![handler], 1).await;
@@ -591,8 +598,9 @@ mod tests {
     async fn child_failure_does_not_change_parent() {
         let parent_handler = FnHandler::new(TaskKind::Scrape, |_context| async {
             Ok(TaskOutcome::with_followups(vec![TaskSpec::new(
-                TaskKind::Assets,
-                serde_json::json!({ "number": "ABC-001" }),
+                TaskPayload::Assets {
+                    number: "ABC-001".to_owned(),
+                },
             )]))
         });
         let child_handler = FnHandler::new(TaskKind::Assets, |_context| async {

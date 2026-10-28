@@ -2,16 +2,12 @@
 
 use std::sync::Arc;
 
-use amane_core::{LibraryRepository, TaskContext, TaskError, TaskHandler, TaskKind, TaskOutcome};
+use amane_core::{
+    LibraryRepository, TaskContext, TaskError, TaskHandler, TaskKind, TaskOutcome, TaskPayload,
+};
 use async_trait::async_trait;
-use serde::Deserialize;
 
 /// 清理任务的载荷.
-#[derive(Debug, Deserialize)]
-struct CleanupPayload {
-    library_id: i64,
-}
-
 /// 把清理任务接到库登记上.
 pub struct CleanupHandler {
     libraries: LibraryRepository,
@@ -30,19 +26,19 @@ impl TaskHandler for CleanupHandler {
     }
 
     async fn run(&self, context: TaskContext) -> Result<TaskOutcome, TaskError> {
-        let payload: CleanupPayload = serde_json::from_value(context.payload.clone())
-            .map_err(|error| TaskError::Failed(format!("清理载荷不合法: {error}")))?;
+        let TaskPayload::Cleanup { library_id } = context.payload else {
+            return Err(TaskError::Failed("载荷类型与任务类型不匹配".to_owned()));
+        };
         let root = self
             .libraries
-            .find(payload.library_id)
+            .require(library_id)
             .await
-            .map_err(|error| TaskError::Failed(format!("查询媒体库失败: {error}")))?
-            .ok_or_else(|| TaskError::Failed(format!("媒体库 {} 不存在", payload.library_id)))?;
+            .map_err(|error| TaskError::Failed(error.to_string()))?;
 
         // 清单在执行时重建: 与界面上看到的来自同一张扫描索引, 不会删掉刚登记的内容.
         let index = self
             .libraries
-            .all_files(payload.library_id, None)
+            .all_files(library_id, None)
             .await
             .map_err(|error| TaskError::Failed(format!("读取扫描索引失败: {error}")))?;
         let manifest = amane_core::build_cleanup_manifest(&index, &root.path_buf());
@@ -112,6 +108,7 @@ mod tests {
     use amane_core::organize::TRASH_DIRNAME;
     use amane_core::{
         Database, TaskContext, TaskError, TaskHandler, TaskKind, TaskLogger, TaskOutcome,
+        TaskPayload,
     };
     use tokio_util::sync::CancellationToken;
 
@@ -130,7 +127,7 @@ mod tests {
     async fn run(
         handler: &CleanupHandler,
         dir: &std::path::Path,
-        payload: serde_json::Value,
+        payload: TaskPayload,
     ) -> Result<TaskOutcome, TaskError> {
         let logger = TaskLogger::open(dir, 1).await.expect("应创建日志");
         handler
@@ -161,7 +158,9 @@ mod tests {
         run(
             &handler,
             dir.path(),
-            serde_json::json!({"library_id": root.id}),
+            TaskPayload::Cleanup {
+                library_id: root.id,
+            },
         )
         .await
         .expect("空清单应成功");
@@ -203,7 +202,9 @@ mod tests {
         run(
             &handler,
             dir.path(),
-            serde_json::json!({"library_id": root.id}),
+            TaskPayload::Cleanup {
+                library_id: root.id,
+            },
         )
         .await
         .expect("应完成");
@@ -228,7 +229,12 @@ mod tests {
     async fn missing_library_fails_with_reason() {
         let (dir, handler) = fixture().await;
 
-        let result = run(&handler, dir.path(), serde_json::json!({"library_id": 99})).await;
+        let result = run(
+            &handler,
+            dir.path(),
+            TaskPayload::Cleanup { library_id: 99 },
+        )
+        .await;
 
         match result {
             Err(TaskError::Failed(message)) => {

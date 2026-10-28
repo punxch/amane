@@ -5,19 +5,12 @@ use std::sync::Arc;
 use amane_core::library::{KindCounts, ScanRules};
 use amane_core::{
     LibraryError, LibraryFile, LibraryRepository, ScanError, TaskContext, TaskError, TaskHandler,
-    TaskKind, TaskOutcome,
+    TaskKind, TaskOutcome, TaskPayload,
 };
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
-use serde::Deserialize;
 
 use amane_core::config::Settings;
-
-/// 扫描任务的载荷.
-#[derive(Debug, Deserialize)]
-struct ScanPayload {
-    library_id: i64,
-}
 
 /// 把扫描任务接到媒体库仓储与配置快照上.
 ///
@@ -59,14 +52,14 @@ impl TaskHandler for ScanHandler {
     }
 
     async fn run(&self, context: TaskContext) -> Result<TaskOutcome, TaskError> {
-        let payload: ScanPayload = serde_json::from_value(context.payload.clone())
-            .map_err(|error| TaskError::Failed(format!("扫描载荷不合法: {error}")))?;
+        let TaskPayload::Scan { library_id } = context.payload else {
+            return Err(TaskError::Failed("载荷类型与任务类型不匹配".to_owned()));
+        };
         let root = self
             .libraries
-            .find(payload.library_id)
+            .require(library_id)
             .await
-            .map_err(|error| TaskError::Failed(format!("查询媒体库失败: {error}")))?
-            .ok_or_else(|| TaskError::Failed(format!("媒体库 {} 不存在", payload.library_id)))?;
+            .map_err(|error| TaskError::Failed(error.to_string()))?;
 
         let rules = Self::rules(&self.settings.load_full());
         context.logger.info(format!("开始扫描 {}", root.path)).await;
@@ -142,6 +135,7 @@ mod tests {
     use amane_core::library::LibraryRepository;
     use amane_core::{
         Database, ScanKind, TaskContext, TaskError, TaskHandler, TaskKind, TaskLogger, TaskOutcome,
+        TaskPayload,
     };
     use arc_swap::ArcSwap;
     use tokio_util::sync::CancellationToken;
@@ -163,7 +157,7 @@ mod tests {
     async fn run(
         handler: &ScanHandler,
         dir: &Path,
-        payload: serde_json::Value,
+        payload: TaskPayload,
     ) -> Result<TaskOutcome, TaskError> {
         let logger = TaskLogger::open(dir, 1).await.expect("应创建日志");
         handler
@@ -190,7 +184,9 @@ mod tests {
         run(
             &handler,
             dir.path(),
-            serde_json::json!({"library_id": root.id}),
+            TaskPayload::Scan {
+                library_id: root.id,
+            },
         )
         .await
         .expect("应完成");
@@ -228,7 +224,9 @@ mod tests {
         run(
             &handler,
             dir.path(),
-            serde_json::json!({"library_id": root.id}),
+            TaskPayload::Scan {
+                library_id: root.id,
+            },
         )
         .await
         .expect("首次扫描应完成");
@@ -239,7 +237,9 @@ mod tests {
         run(
             &handler,
             dir.path(),
-            serde_json::json!({"library_id": root.id}),
+            TaskPayload::Scan {
+                library_id: root.id,
+            },
         )
         .await
         .expect("再次扫描应完成");
@@ -262,7 +262,9 @@ mod tests {
         run(
             &_handler,
             dir.path(),
-            serde_json::json!({"library_id": root.id}),
+            TaskPayload::Scan {
+                library_id: root.id,
+            },
         )
         .await
         .expect("应完成");
@@ -282,7 +284,9 @@ mod tests {
         run(
             &handler,
             dir.path(),
-            serde_json::json!({"library_id": root.id}),
+            TaskPayload::Scan {
+                library_id: root.id,
+            },
         )
         .await
         .expect("应完成");
@@ -299,27 +303,13 @@ mod tests {
     async fn missing_library_fails_with_reason() {
         let (dir, handler, _libraries) = fixture().await;
 
-        let result = run(&handler, dir.path(), serde_json::json!({"library_id": 99})).await;
+        let result = run(&handler, dir.path(), TaskPayload::Scan { library_id: 99 }).await;
 
         match result {
             Err(TaskError::Failed(message)) => {
                 assert!(message.contains("不存在"), "应说明原因, 实际 {message}")
             }
             other => panic!("不存在的库必须失败, 实际 {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn malformed_payload_fails_with_reason() {
-        let (dir, handler, _libraries) = fixture().await;
-
-        let result = run(&handler, dir.path(), serde_json::json!({"id": 1})).await;
-
-        match result {
-            Err(TaskError::Failed(message)) => {
-                assert!(message.contains("载荷不合法"), "实际 {message}")
-            }
-            other => panic!("载荷缺字段必须失败, 实际 {other:?}"),
         }
     }
 
@@ -332,7 +322,9 @@ mod tests {
         let result = run(
             &handler,
             dir.path(),
-            serde_json::json!({"library_id": root.id}),
+            TaskPayload::Scan {
+                library_id: root.id,
+            },
         )
         .await;
 

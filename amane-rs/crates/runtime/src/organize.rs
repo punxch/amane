@@ -1,25 +1,16 @@
 //! 整理任务: 按预览目标移动文件; 冲突按预览时的选择处置, 结果逐项写入日志.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use amane_core::organize::{ConflictAction, ExecuteRequest, ItemOutcome, PreviewAssembler};
 use amane_core::{
     OrganizeError, OrganizeRepository, TaskContext, TaskError, TaskHandler, TaskKind, TaskOutcome,
+    TaskPayload,
 };
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
-use serde::Deserialize;
 
 use amane_core::config::Settings;
-
-/// 整理任务的载荷. choices 以源相对路径为键, 值是 `overwrite` / `rename`; 缺省跳过冲突项.
-#[derive(Debug, Deserialize)]
-struct OrganizePayload {
-    library_id: i64,
-    #[serde(default)]
-    choices: BTreeMap<String, String>,
-}
 
 /// 把整理任务接到库登记、预览装配与配置快照上.
 pub struct OrganizeHandler {
@@ -52,14 +43,18 @@ impl TaskHandler for OrganizeHandler {
     }
 
     async fn run(&self, context: TaskContext) -> Result<TaskOutcome, TaskError> {
-        let payload: OrganizePayload = serde_json::from_value(context.payload.clone())
-            .map_err(|error| TaskError::Failed(format!("整理载荷不合法: {error}")))?;
+        let TaskPayload::Organize {
+            library_id,
+            choices,
+        } = context.payload
+        else {
+            return Err(TaskError::Failed("载荷类型与任务类型不匹配".to_owned()));
+        };
         let root = self
             .libraries
-            .find(payload.library_id)
+            .require(library_id)
             .await
-            .map_err(|error| TaskError::Failed(format!("查询媒体库失败: {error}")))?
-            .ok_or_else(|| TaskError::Failed(format!("媒体库 {} 不存在", payload.library_id)))?;
+            .map_err(|error| TaskError::Failed(error.to_string()))?;
 
         let settings = self.settings.load_full();
 
@@ -76,8 +71,7 @@ impl TaskHandler for OrganizeHandler {
             .iter()
             .map(|item| {
                 let action = if item.conflict.is_some() {
-                    payload
-                        .choices
+                    choices
                         .get(&item.source_path)
                         .and_then(|value| ConflictAction::parse(value))
                         .unwrap_or(ConflictAction::Skip)
@@ -186,7 +180,7 @@ mod tests {
     use amane_core::organize::{OrganizeRepository, TRASH_DIRNAME};
     use amane_core::{
         Database, MetadataRepository, TaskContext, TaskError, TaskHandler, TaskKind, TaskLogger,
-        TaskOutcome,
+        TaskOutcome, TaskPayload,
     };
     use arc_swap::ArcSwap;
     use tokio_util::sync::CancellationToken;
@@ -210,7 +204,7 @@ mod tests {
     async fn run(
         handler: &OrganizeHandler,
         dir: &std::path::Path,
-        payload: serde_json::Value,
+        payload: TaskPayload,
     ) -> Result<TaskOutcome, TaskError> {
         let logger = TaskLogger::open(dir, 1).await.expect("应创建日志");
         handler
@@ -250,7 +244,10 @@ mod tests {
         run(
             &handler,
             dir.path(),
-            serde_json::json!({"library_id": root.id}),
+            TaskPayload::Organize {
+                library_id: root.id,
+                choices: Default::default(),
+            },
         )
         .await
         .expect("应完成");
@@ -303,7 +300,10 @@ mod tests {
         run(
             &handler,
             dir.path(),
-            serde_json::json!({"library_id": root.id}),
+            TaskPayload::Organize {
+                library_id: root.id,
+                choices: Default::default(),
+            },
         )
         .await
         .expect("应完成");
@@ -316,10 +316,10 @@ mod tests {
         run(
             &handler,
             dir.path(),
-            serde_json::json!({
-                "library_id": root.id,
-                "choices": {"ABC-123.mp4": "overwrite"}
-            }),
+            TaskPayload::Organize {
+                library_id: root.id,
+                choices: [("ABC-123.mp4".to_owned(), "overwrite".to_owned())].into(),
+            },
         )
         .await
         .expect("应完成");
@@ -378,7 +378,10 @@ mod tests {
         run(
             &handler,
             dir.path(),
-            serde_json::json!({"library_id": root.id}),
+            TaskPayload::Organize {
+                library_id: root.id,
+                choices: Default::default(),
+            },
         )
         .await
         .expect("应完成");
@@ -388,20 +391,6 @@ mod tests {
             body.trim_end().ends_with("ABC-123/ABC-123.mp4"),
             "正文应是完整路径, 实际 {body}"
         );
-    }
-
-    #[tokio::test]
-    async fn malformed_payload_fails_with_reason() {
-        let (dir, handler) = fixture().await;
-
-        let result = run(&handler, dir.path(), serde_json::json!({"id": 1})).await;
-
-        match result {
-            Err(TaskError::Failed(message)) => {
-                assert!(message.contains("载荷不合法"), "实际 {message}")
-            }
-            other => panic!("载荷缺字段必须失败, 实际 {other:?}"),
-        }
     }
 
     #[tokio::test]

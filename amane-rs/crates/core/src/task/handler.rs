@@ -3,7 +3,7 @@ use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
 use super::logger::TaskLogger;
-use super::model::{TaskKind, TaskSpec};
+use super::model::{TaskKind, TaskPayload, TaskSpec};
 
 /// 处理失败的原因. 取消与失败是两种终态, 不合并.
 #[derive(Debug, Error)]
@@ -17,7 +17,8 @@ pub enum TaskError {
 /// 处理函数拿到的上下文.
 pub struct TaskContext {
     pub task_id: i64,
-    pub payload: serde_json::Value,
+    /// 已按类型还原的载荷; 处理函数不必再解析 JSON.
+    pub payload: TaskPayload,
     pub logger: TaskLogger,
     /// 取消令牌; 处理函数在等待点检查它, 收到信号后尽快返回 [`TaskError::Cancelled`].
     pub cancel: CancellationToken,

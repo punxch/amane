@@ -1,8 +1,11 @@
 use std::fmt;
 
+use std::collections::BTreeMap;
+
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 /// 任务类型. 每种类型对应一个处理函数.
 #[derive(
@@ -105,24 +108,142 @@ impl TaskStatus {
     }
 }
 
-/// 入队请求. 载荷由各类型自行解释, 队列不感知其结构.
+/// 任务载荷. 每个变体自带任务类型, 因此类型与载荷不可能对不上.
+///
+/// 落库时只存载荷本体, 类型另存 `task.kind` 一列; 读回时按那一列还原变体.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TaskPayload {
+    Scrape {
+        number: String,
+    },
+    Assets {
+        number: String,
+    },
+    Scan {
+        library_id: i64,
+    },
+    Organize {
+        library_id: i64,
+        choices: BTreeMap<String, String>,
+    },
+    Refresh,
+    Cleanup {
+        library_id: i64,
+    },
+}
+
+impl TaskPayload {
+    pub const fn kind(&self) -> TaskKind {
+        match self {
+            Self::Scrape { .. } => TaskKind::Scrape,
+            Self::Assets { .. } => TaskKind::Assets,
+            Self::Scan { .. } => TaskKind::Scan,
+            Self::Organize { .. } => TaskKind::Organize,
+            Self::Refresh => TaskKind::Refresh,
+            Self::Cleanup { .. } => TaskKind::Cleanup,
+        }
+    }
+
+    /// 落库形态: 只有载荷本体, 不含类型.
+    pub fn body(&self) -> serde_json::Value {
+        match self {
+            Self::Scrape { number } | Self::Assets { number } => {
+                serde_json::json!({ "number": number })
+            }
+            Self::Scan { library_id } | Self::Cleanup { library_id } => {
+                serde_json::json!({ "library_id": library_id })
+            }
+            Self::Organize {
+                library_id,
+                choices,
+            } => serde_json::json!({ "library_id": library_id, "choices": choices }),
+            Self::Refresh => serde_json::json!({}),
+        }
+    }
+
+    /// 按类型还原载荷.
+    pub fn parse(kind: TaskKind, body: serde_json::Value) -> Result<Self, PayloadError> {
+        let payload = match kind {
+            TaskKind::Scrape => Self::Scrape {
+                number: take::<NumberRef>(kind, body)?.number,
+            },
+            TaskKind::Assets => Self::Assets {
+                number: take::<NumberRef>(kind, body)?.number,
+            },
+            TaskKind::Scan => Self::Scan {
+                library_id: take::<LibraryRef>(kind, body)?.library_id,
+            },
+            TaskKind::Cleanup => Self::Cleanup {
+                library_id: take::<LibraryRef>(kind, body)?.library_id,
+            },
+            TaskKind::Organize => {
+                let body = take::<OrganizeBody>(kind, body)?;
+                Self::Organize {
+                    library_id: body.library_id,
+                    choices: body.choices,
+                }
+            }
+            TaskKind::Refresh => Self::Refresh,
+        };
+
+        Ok(payload)
+    }
+}
+
+#[derive(Debug, Error)]
+#[error("任务载荷不合法 ({kind}): {message}")]
+pub struct PayloadError {
+    pub kind: TaskKind,
+    pub message: String,
+}
+
+fn take<T: serde::de::DeserializeOwned>(
+    kind: TaskKind,
+    body: serde_json::Value,
+) -> Result<T, PayloadError> {
+    serde_json::from_value(body).map_err(|error| PayloadError {
+        kind,
+        message: error.to_string(),
+    })
+}
+
+#[derive(Deserialize)]
+struct NumberRef {
+    number: String,
+}
+
+#[derive(Deserialize)]
+struct LibraryRef {
+    library_id: i64,
+}
+
+#[derive(Deserialize)]
+struct OrganizeBody {
+    library_id: i64,
+    #[serde(default)]
+    choices: BTreeMap<String, String>,
+}
+
+/// 入队请求.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskSpec {
-    pub kind: TaskKind,
-    pub payload: serde_json::Value,
+    pub payload: TaskPayload,
     pub priority: i32,
     /// 定时登记的标识; 手工提交为 `None`.
     pub schedule_id: Option<i64>,
 }
 
 impl TaskSpec {
-    pub fn new(kind: TaskKind, payload: serde_json::Value) -> Self {
+    pub fn new(payload: TaskPayload) -> Self {
         Self {
-            kind,
             payload,
             priority: 0,
             schedule_id: None,
         }
+    }
+
+    pub const fn kind(&self) -> TaskKind {
+        self.payload.kind()
     }
 }
 
@@ -142,4 +263,39 @@ pub struct Task {
     pub created_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TaskKind, TaskPayload};
+
+    #[test]
+    fn body_round_trips_through_parse() {
+        let payload = TaskPayload::Organize {
+            library_id: 3,
+            choices: [("ABC-123.mp4".to_owned(), "rename".to_owned())].into(),
+        };
+
+        let restored =
+            TaskPayload::parse(payload.kind(), payload.body()).expect("应还原成同一份载荷");
+
+        assert_eq!(restored, payload);
+    }
+
+    #[test]
+    fn parse_rejects_body_missing_required_field() {
+        let result = TaskPayload::parse(TaskKind::Scan, serde_json::json!({ "id": 1 }));
+
+        match result {
+            Err(error) => {
+                let message = error.to_string();
+                assert!(message.contains("scan"), "说明应指出任务类型: {message}");
+                assert!(
+                    message.contains("library_id"),
+                    "说明应指出缺的字段: {message}"
+                );
+            }
+            Ok(_) => panic!("缺字段的载荷不应被接受"),
+        }
+    }
 }

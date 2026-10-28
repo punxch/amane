@@ -39,7 +39,7 @@ pub use schedule::{
     Pattern, Schedule, ScheduleError, SchedulePatch, ScheduleRepository, ScheduleSpec, Scheduler,
 };
 pub use task::{
-    Task, TaskContext, TaskError, TaskFilter, TaskHandler, TaskKind, TaskLogLine, TaskLogger,
-    TaskOutcome, TaskRepository, TaskRepositoryError, TaskService, TaskServiceError, TaskSpec,
-    TaskStatus,
+    PayloadError, Task, TaskContext, TaskError, TaskFilter, TaskHandler, TaskKind, TaskLogLine,
+    TaskLogger, TaskOutcome, TaskPayload, TaskRepository, TaskRepositoryError, TaskService,
+    TaskServiceError, TaskSpec, TaskStatus,
 };

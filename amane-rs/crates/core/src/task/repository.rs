@@ -34,7 +34,7 @@ impl TaskRepository {
     }
 
     pub async fn enqueue(&self, spec: &TaskSpec) -> Result<Task, TaskRepositoryError> {
-        let payload = serde_json::to_string(&spec.payload).unwrap_or_else(|_| "null".to_owned());
+        let payload = spec.payload.body().to_string();
         let row = sqlx::query_as::<_, Task>(
             r#"
             INSERT INTO task (kind, payload, status, priority, schedule_id, created_at)
@@ -42,7 +42,7 @@ impl TaskRepository {
             RETURNING *
             "#,
         )
-        .bind(spec.kind)
+        .bind(spec.kind())
         .bind(payload)
         .bind(spec.priority)
         .bind(spec.schedule_id)
@@ -98,8 +98,7 @@ impl TaskRepository {
 
         let mut children = Vec::with_capacity(followups.len());
         for spec in followups {
-            let payload =
-                serde_json::to_string(&spec.payload).unwrap_or_else(|_| "null".to_owned());
+            let payload = spec.payload.body().to_string();
             let child = sqlx::query_as::<_, Task>(
                 r#"
                 INSERT INTO task (kind, payload, status, priority, created_at)
@@ -107,7 +106,7 @@ impl TaskRepository {
                 RETURNING *
                 "#,
             )
-            .bind(spec.kind)
+            .bind(spec.kind())
             .bind(payload)
             .bind(spec.priority)
             .bind(Utc::now())
@@ -292,6 +291,7 @@ impl TaskRepository {
 mod tests {
     use super::{TaskFilter, TaskRepository};
     use crate::db::Database;
+    use crate::task::model::TaskPayload;
     use crate::task::{TaskKind, TaskSpec, TaskStatus};
 
     async fn repository() -> (tempfile::TempDir, TaskRepository) {
@@ -303,7 +303,9 @@ mod tests {
     }
 
     fn spec(number: &str) -> TaskSpec {
-        TaskSpec::new(TaskKind::Scrape, serde_json::json!({ "number": number }))
+        TaskSpec::new(TaskPayload::Scrape {
+            number: number.to_owned(),
+        })
     }
 
     #[tokio::test]
@@ -352,10 +354,10 @@ mod tests {
         let children = repository
             .complete(
                 parent.id,
-                &[TaskSpec::new(
-                    TaskKind::Organize,
-                    serde_json::json!({ "number": "ABC-001" }),
-                )],
+                &[TaskSpec::new(TaskPayload::Organize {
+                    library_id: 1,
+                    choices: std::collections::BTreeMap::new(),
+                })],
             )
             .await
             .expect("应完成");

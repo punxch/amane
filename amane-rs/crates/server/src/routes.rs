@@ -1,7 +1,7 @@
 use amane_core::TaskLogger;
 use amane_core::{
     LockableField, MediaNumber, MetadataFilter, MetadataInput, SchedulePatch, ScheduleSpec,
-    TaskFilter, TaskKind, TaskServiceError, TaskSpec, TaskStatus,
+    TaskFilter, TaskKind, TaskPayload, TaskServiceError, TaskSpec, TaskStatus,
 };
 use axum::Json;
 use axum::Router;
@@ -546,12 +546,13 @@ pub async fn create_task(
         message: format!("未知任务类型: {}", payload.kind),
     })?;
 
-    let spec = TaskSpec {
-        kind,
-        payload: payload.payload,
-        priority: payload.priority,
-        schedule_id: None,
-    };
+    // 载荷在这里就按类型还原: 拼错的形状不进队列, 也不会等到执行时才失败.
+    let body = TaskPayload::parse(kind, payload.payload).map_err(|error| ApiError::Invalid {
+        code: "invalid_task_payload",
+        message: error.to_string(),
+    })?;
+    let mut spec = TaskSpec::new(body);
+    spec.priority = payload.priority;
     let task = state
         .runtime
         .tasks
@@ -1110,10 +1111,9 @@ pub async fn scan_library(
     let task = state
         .runtime
         .tasks
-        .submit(amane_core::TaskSpec::new(
-            amane_core::TaskKind::Scan,
-            serde_json::json!({ "library_id": id }),
-        ))
+        .submit(amane_core::TaskSpec::new(amane_core::TaskPayload::Scan {
+            library_id: id,
+        }))
         .await
         .map_err(map_task_error)?;
 
@@ -1256,11 +1256,10 @@ pub async fn organize_execute(
         .runtime
         .tasks
         .submit(amane_core::TaskSpec::new(
-            amane_core::TaskKind::Organize,
-            serde_json::json!({
-                "library_id": id,
-                "choices": payload.choices,
-            }),
+            amane_core::TaskPayload::Organize {
+                library_id: id,
+                choices: payload.choices,
+            },
         ))
         .await
         .map_err(map_task_error)?;
@@ -1325,8 +1324,7 @@ pub async fn cleanup_execute(
         .runtime
         .tasks
         .submit(amane_core::TaskSpec::new(
-            amane_core::TaskKind::Cleanup,
-            serde_json::json!({ "library_id": id }),
+            amane_core::TaskPayload::Cleanup { library_id: id },
         ))
         .await
         .map_err(map_task_error)?;

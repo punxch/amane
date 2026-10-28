@@ -4,10 +4,9 @@ use std::sync::Arc;
 
 use amane_core::{
     LockableField, MediaNumber, MetadataRepository, TaskContext, TaskError, TaskHandler, TaskKind,
-    TaskOutcome,
+    TaskOutcome, TaskPayload,
 };
 use async_trait::async_trait;
-use serde::Deserialize;
 
 use crate::resource::ResourceStore;
 
@@ -25,11 +24,6 @@ impl ImageKind {
             Self::Cover => "封面",
         }
     }
-}
-
-#[derive(Debug, Deserialize)]
-struct AssetsPayload {
-    number: String,
 }
 
 /// 把条目的海报与封面取到本地.
@@ -96,9 +90,10 @@ impl TaskHandler for AssetsHandler {
     }
 
     async fn run(&self, context: TaskContext) -> Result<TaskOutcome, TaskError> {
-        let payload: AssetsPayload = serde_json::from_value(context.payload.clone())
-            .map_err(|error| TaskError::Failed(format!("资源任务载荷不合法: {error}")))?;
-        let number = MediaNumber::parse(&payload.number)
+        let TaskPayload::Assets { number } = &context.payload else {
+            return Err(TaskError::Failed("载荷类型与任务类型不匹配".to_owned()));
+        };
+        let number = MediaNumber::parse(number)
             .map_err(|error| TaskError::Failed(format!("番号无法识别: {error}")))?;
 
         let row = self
@@ -136,7 +131,7 @@ mod tests {
 
     use amane_core::{
         Database, LockableField, MediaNumber, MetadataInput, MetadataRepository, TaskContext,
-        TaskError, TaskHandler, TaskLogger, TaskOutcome,
+        TaskError, TaskHandler, TaskLogger, TaskOutcome, TaskPayload,
     };
     use tokio_util::sync::CancellationToken;
 
@@ -178,7 +173,7 @@ mod tests {
     async fn run(
         handler: &AssetsHandler,
         dir: &std::path::Path,
-        payload: serde_json::Value,
+        payload: TaskPayload,
     ) -> Result<TaskOutcome, TaskError> {
         let logger = TaskLogger::open(dir, 1).await.expect("应创建日志");
         handler
@@ -211,7 +206,9 @@ mod tests {
         let outcome = run(
             &fixture.handler,
             fixture.dir.path(),
-            serde_json::json!({ "number": "ABC-123" }),
+            TaskPayload::Assets {
+                number: "ABC-123".to_owned(),
+            },
         )
         .await
         .expect("下载失败不应让任务失败");
@@ -259,7 +256,9 @@ mod tests {
         run(
             &fixture.handler,
             fixture.dir.path(),
-            serde_json::json!({ "number": "ABC-123" }),
+            TaskPayload::Assets {
+                number: "ABC-123".to_owned(),
+            },
         )
         .await
         .expect("应完成");
@@ -280,7 +279,9 @@ mod tests {
         let result = run(
             &fixture.handler,
             fixture.dir.path(),
-            serde_json::json!({ "number": "ZZZ-999" }),
+            TaskPayload::Assets {
+                number: "ZZZ-999".to_owned(),
+            },
         )
         .await;
 

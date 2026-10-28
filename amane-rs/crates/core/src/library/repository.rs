@@ -82,6 +82,15 @@ impl LibraryRepository {
         Ok(rows)
     }
 
+    /// 取媒体库登记; 不存在时报出可读原因.
+    ///
+    /// 处理函数与端点都需要这一句, 各写一遍会让文案漂移.
+    pub async fn require(&self, id: i64) -> Result<LibraryRoot, LibraryError> {
+        self.find(id)
+            .await?
+            .ok_or_else(|| LibraryError::NotFound(id))
+    }
+
     pub async fn find(&self, id: i64) -> Result<Option<LibraryRoot>, LibraryError> {
         let row = sqlx::query_as::<_, LibraryRoot>("SELECT * FROM library_root WHERE id = ?1")
             .bind(id)

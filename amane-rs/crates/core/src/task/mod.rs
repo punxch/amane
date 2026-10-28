@@ -10,6 +10,6 @@ mod service;
 
 pub use handler::{TaskContext, TaskError, TaskHandler, TaskOutcome};
 pub use logger::{TaskLogLine, TaskLogger};
-pub use model::{Task, TaskKind, TaskSpec, TaskStatus};
+pub use model::{PayloadError, Task, TaskKind, TaskPayload, TaskSpec, TaskStatus};
 pub use repository::{TaskFilter, TaskRepository, TaskRepositoryError};
 pub use service::{TaskService, TaskServiceError};

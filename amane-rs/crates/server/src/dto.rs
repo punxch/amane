@@ -639,7 +639,7 @@ pub struct PreviewItemDto {
 pub struct OrganizeExecuteRequest {
     /// 源相对路径 → 处置: `overwrite` / `rename`.
     #[serde(default)]
-    pub choices: std::collections::HashMap<String, String>,
+    pub choices: BTreeMap<String, String>,
 }
 
 /// 清理清单. 只读: 展示待删文件、大小与命中原因, 不直接删除.

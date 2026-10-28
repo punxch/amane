@@ -3,8 +3,9 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 
 use super::model::{Pattern, Schedule, ScheduleError};
+use crate::task::{TaskPayload, TaskService, TaskSpec};
+
 use super::repository::ScheduleRepository;
-use crate::task::{TaskService, TaskSpec};
 
 /// 每次扫描的间隔. cron 的最小粒度是分钟, 这个间隔保证触发至多迟到十秒.
 const TICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
@@ -56,12 +57,13 @@ impl Scheduler {
             return Ok(None);
         }
 
-        let payload: serde_json::Value = serde_json::from_str(&schedule.payload)
+        let body: serde_json::Value = serde_json::from_str(&schedule.payload)
+            .map_err(|error| ScheduleError::InvalidPayload(error.to_string()))?;
+        let payload = TaskPayload::parse(schedule.kind, body)
             .map_err(|error| ScheduleError::InvalidPayload(error.to_string()))?;
         let task = self
             .tasks
             .submit(TaskSpec {
-                kind: schedule.kind,
                 payload,
                 priority: 0,
                 schedule_id: Some(schedule.id),

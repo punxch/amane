@@ -4,20 +4,14 @@ use std::sync::Arc;
 
 use amane_core::{
     MediaNumber, MetadataInput, MetadataRepository, ScrapeWrite, SourceSnapshotInput, TaskContext,
-    TaskError, TaskHandler, TaskKind, TaskLogger, TaskOutcome, TaskSpec,
+    TaskError, TaskHandler, TaskKind, TaskLogger, TaskOutcome, TaskPayload, TaskSpec,
 };
 use async_trait::async_trait;
-use serde::Deserialize;
 use tracing::Instrument;
 
 use amane_crawlers::{Capability, Registry, ScrapedMetadata, SourceError, aggregate};
 
 /// 刮削任务的载荷.
-#[derive(Debug, Deserialize)]
-struct ScrapePayload {
-    number: String,
-}
-
 /// 把刮削任务接到来源登记表上.
 ///
 /// 来源并行请求, 结果按登记顺序聚合: 标量取首个非空, 列表整份取首个非空来源.
@@ -39,9 +33,10 @@ impl TaskHandler for ScrapeHandler {
     }
 
     async fn run(&self, context: TaskContext) -> Result<TaskOutcome, TaskError> {
-        let payload: ScrapePayload = serde_json::from_value(context.payload.clone())
-            .map_err(|error| TaskError::Failed(format!("刮削载荷不合法: {error}")))?;
-        let number = MediaNumber::parse(&payload.number)
+        let TaskPayload::Scrape { number } = context.payload else {
+            return Err(TaskError::Failed("载荷类型与任务类型不匹配".to_owned()));
+        };
+        let number = MediaNumber::parse(&number)
             .map_err(|error| TaskError::Failed(format!("番号无法识别: {error}")))?;
 
         context.logger.info(format!("开始刮削 {number}")).await;
@@ -150,8 +145,9 @@ impl TaskHandler for ScrapeHandler {
             .map_err(|error| TaskError::Failed(format!("写入来源快照失败: {error}")))?;
         // 图片下载拆成后继任务: 下载失败不该让刮削判失败, 拆开之后失败有独立记录与重试入口.
         Ok(TaskOutcome::with_followups(vec![TaskSpec::new(
-            TaskKind::Assets,
-            serde_json::json!({ "number": row.number }),
+            TaskPayload::Assets {
+                number: row.number.clone(),
+            },
         )]))
     }
 }
@@ -182,7 +178,7 @@ mod tests {
 
     use amane_core::{
         Database, LockableField, MediaNumber, MetadataInput, MetadataRepository, TaskContext,
-        TaskError, TaskHandler, TaskKind, TaskLogger, TaskOutcome,
+        TaskError, TaskHandler, TaskKind, TaskLogger, TaskOutcome, TaskPayload,
     };
     use async_trait::async_trait;
     use tokio_util::sync::CancellationToken;
@@ -285,7 +281,7 @@ mod tests {
     async fn run(
         handler: &ScrapeHandler,
         dir: &std::path::Path,
-        payload: serde_json::Value,
+        payload: TaskPayload,
     ) -> Result<TaskOutcome, TaskError> {
         let logger = TaskLogger::open(dir, 1).await.expect("应创建日志");
         handler
@@ -309,7 +305,9 @@ mod tests {
         let outcome = run(
             &fixture.handler,
             fixture.dir.path(),
-            serde_json::json!({ "number": "ABC-123" }),
+            TaskPayload::Scrape {
+                number: "ABC-123".to_owned(),
+            },
         )
         .await
         .expect("应完成");
@@ -349,7 +347,9 @@ mod tests {
         run(
             &fixture.handler,
             fixture.dir.path(),
-            serde_json::json!({ "number": "ABC-123" }),
+            TaskPayload::Scrape {
+                number: "ABC-123".to_owned(),
+            },
         )
         .await
         .expect("应完成");
@@ -374,15 +374,20 @@ mod tests {
         let outcome = run(
             &fixture.handler,
             fixture.dir.path(),
-            serde_json::json!({ "number": "ABC-123" }),
+            TaskPayload::Scrape {
+                number: "ABC-123".to_owned(),
+            },
         )
         .await
         .expect("应完成");
 
         assert_eq!(outcome.followups.len(), 1, "刮削应派生一个资源任务");
-        assert_eq!(outcome.followups[0].kind, TaskKind::Assets);
+        assert_eq!(outcome.followups[0].kind(), TaskKind::Assets);
         assert_eq!(
-            outcome.followups[0].payload["number"], "ABC-123",
+            outcome.followups[0].payload,
+            TaskPayload::Assets {
+                number: "ABC-123".to_owned()
+            },
             "后继任务要带番号"
         );
     }
@@ -398,7 +403,9 @@ mod tests {
         run(
             &fixture.handler,
             fixture.dir.path(),
-            serde_json::json!({ "number": "ABC-123" }),
+            TaskPayload::Scrape {
+                number: "ABC-123".to_owned(),
+            },
         )
         .await
         .expect("单个来源解析失败不应让任务失败");
@@ -424,7 +431,9 @@ mod tests {
         let error = run(
             &fixture.handler,
             fixture.dir.path(),
-            serde_json::json!({ "number": "ABC-123" }),
+            TaskPayload::Scrape {
+                number: "ABC-123".to_owned(),
+            },
         )
         .await
         .expect_err("全部解析失败时任务应失败");
@@ -447,7 +456,9 @@ mod tests {
         let result = run(
             &fixture.handler,
             fixture.dir.path(),
-            serde_json::json!({ "number": "ABC-123" }),
+            TaskPayload::Scrape {
+                number: "ABC-123".to_owned(),
+            },
         )
         .await;
 
@@ -468,7 +479,9 @@ mod tests {
         let result = run(
             &fixture.handler,
             fixture.dir.path(),
-            serde_json::json!({ "number": "ABC-123" }),
+            TaskPayload::Scrape {
+                number: "ABC-123".to_owned(),
+            },
         )
         .await;
 
@@ -479,30 +492,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_malformed_payload() {
-        let fixture = fixture(vec![source("working", Some("命中"), false)]).await;
-
-        let result = run(
-            &fixture.handler,
-            fixture.dir.path(),
-            serde_json::json!({ "code": 1 }),
-        )
-        .await;
-
-        match result {
-            Err(TaskError::Failed(message)) => assert!(message.contains("载荷不合法")),
-            _ => panic!("载荷缺字段时必须失败并说明原因"),
-        }
-    }
-
-    #[tokio::test]
     async fn rejects_unrecognized_number() {
         let fixture = fixture(vec![source("working", Some("命中"), false)]).await;
 
         let result = run(
             &fixture.handler,
             fixture.dir.path(),
-            serde_json::json!({ "number": "???" }),
+            TaskPayload::Scrape {
+                number: "???".to_owned(),
+            },
         )
         .await;
 
