@@ -20,6 +20,8 @@ pub struct MetadataDto {
     pub label: Option<String>,
     pub series: Option<String>,
     pub poster_url: Option<String>,
+    /// 海报在服务端的地址; 为 `None` 时表示尚未存到本地.
+    pub poster_local_url: Option<String>,
     /// 演员名单; 列表端点不返回, 只有详情端点填充.
     pub actors: Vec<String>,
     /// 条目类型, 取值见 `ContentType`.
@@ -41,6 +43,9 @@ impl From<Metadata> for MetadataDto {
             label: value.label,
             series: value.series,
             poster_url: value.poster_url,
+            poster_local_url: value
+                .poster_resource_id
+                .map(|id| format!("/api/resources/{id}")),
             actors: Vec::new(),
             content_type: value.content_type.as_str().to_owned(),
             created_at: value.created_at,

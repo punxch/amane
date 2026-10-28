@@ -66,6 +66,8 @@ pub enum NetError {
     Request { url: String, message: String },
     #[error("上游返回 {status}, 轮换指纹后仍未通过")]
     Rejected { status: u16 },
+    #[error("请求 {url} 返回 {status}")]
+    Status { url: String, status: u16 },
 }
 
 /// 出站客户端: 每次请求先取该 host 的令牌, 被拒时轮换指纹后重试.
@@ -112,6 +114,23 @@ impl WebClient {
         self.execute(url, None).await
     }
 
+    /// 取回原始字节与上游声明的类型. 非成功状态视为失败.
+    pub async fn get_bytes(&self, url: &str) -> Result<(Vec<u8>, Option<String>), NetError> {
+        let response = self.get(url).await?;
+        ensure_success(url, &response)?;
+        let declared = response
+            .headers()
+            .get(wreq::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|error| request_error(url, &error))?;
+
+        Ok((bytes.to_vec(), declared))
+    }
+
     /// 以 JSON 请求体发送并解析 JSON 响应.
     pub async fn post_json(
         &self,
@@ -119,6 +138,7 @@ impl WebClient {
         body: &serde_json::Value,
     ) -> Result<serde_json::Value, NetError> {
         let response = self.execute(url, Some(body)).await?;
+        ensure_success(url, &response)?;
         response
             .json::<serde_json::Value>()
             .await
@@ -187,6 +207,19 @@ fn build(timeout: Duration, profile: Fingerprint) -> Result<Client, NetError> {
         .timeout(timeout)
         .build()
         .map_err(|error| NetError::Build(error.to_string()))
+}
+
+/// 便捷方法要求成功状态; 需要按状态码分支的调用方直接用 `get`.
+fn ensure_success(url: &str, response: &wreq::Response) -> Result<(), NetError> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(());
+    }
+
+    Err(NetError::Status {
+        url: url.to_owned(),
+        status: status.as_u16(),
+    })
 }
 
 fn request_error(url: &str, error: &wreq::Error) -> NetError {

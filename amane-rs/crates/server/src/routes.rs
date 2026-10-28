@@ -7,6 +7,8 @@ use axum::Json;
 use axum::Router;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 
 use crate::dto::{
@@ -26,6 +28,7 @@ pub fn router() -> Router<AppState> {
         .route("/metadata/{number}", get(get_metadata))
         .route("/number/extract", get(extract_number))
         .route("/config/schema", get(config_schema))
+        .route("/resources/{id}", get(get_resource))
         .route("/tasks", get(list_tasks).post(create_task))
         .route("/tasks/{id}", get(get_task))
         .route("/tasks/{id}/cancel", post(cancel_task))
@@ -382,4 +385,50 @@ pub async fn task_children(
         total,
         items: rows.into_iter().map(TaskDto::from).collect(),
     }))
+}
+
+/// 资源内容. 地址即标识, 内容不可变, 因此可长期缓存.
+#[utoipa::path(
+    get,
+    path = "/api/resources/{id}",
+    tag = "resource",
+    params(("id" = i64, Path, description = "资源标识")),
+    responses(
+        (status = 200, description = "资源内容"),
+        (status = 404, body = crate::error::ErrorBody),
+        (status = 401, body = crate::error::ErrorBody)
+    )
+)]
+pub async fn get_resource(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Response, ApiError> {
+    let resource = state
+        .runtime
+        .resources
+        .repository()
+        .find(id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound {
+            what: format!("资源 {id} 不存在"),
+        })?;
+
+    let bytes = state
+        .runtime
+        .resources
+        .read(&resource)
+        .await
+        .map_err(|error| ApiError::Internal(format!("读取资源文件失败: {error}")))?;
+
+    Ok((
+        [
+            (CONTENT_TYPE, resource.content_type),
+            (
+                CACHE_CONTROL,
+                "public, max-age=31536000, immutable".to_owned(),
+            ),
+        ],
+        bytes,
+    )
+        .into_response())
 }

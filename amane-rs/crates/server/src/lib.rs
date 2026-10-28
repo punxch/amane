@@ -30,6 +30,7 @@ pub use state::{AppState, Runtime};
         routes::get_metadata,
         routes::extract_number,
         routes::config_schema,
+        routes::get_resource,
         routes::list_tasks,
         routes::create_task,
         routes::get_task,

@@ -3,12 +3,12 @@ use std::time::Duration;
 
 use amane_core::config::Settings;
 use amane_core::{
-    Database, DbError, MetadataRepository, TaskHandler, TaskRepository, TaskRepositoryError,
-    TaskService,
+    Database, DbError, MetadataRepository, ResourceRepository, TaskHandler, TaskRepository,
+    TaskRepositoryError, TaskService,
 };
 use amane_crawlers::Registry;
 use amane_net::{Rate, RateLimiters, WebClient};
-use amane_runtime::ScrapeHandler;
+use amane_runtime::{ResourceStore, ScrapeHandler};
 
 /// 启动失败的原因.
 #[derive(Debug, thiserror::Error)]
@@ -31,6 +31,7 @@ pub struct Runtime {
     pub database: Database,
     pub metadata: MetadataRepository,
     pub tasks: Arc<TaskService>,
+    pub resources: Arc<ResourceStore>,
 }
 
 impl Runtime {
@@ -55,9 +56,18 @@ impl Runtime {
         )
         .map_err(|error| BootError::Network(error.to_string()))?;
 
-        let sources = Arc::new(Registry::builtin(Arc::new(client)));
-        let handlers: Vec<Arc<dyn TaskHandler>> =
-            vec![ScrapeHandler::new(Arc::clone(&sources), metadata.clone())];
+        let client = Arc::new(client);
+        let resources = Arc::new(ResourceStore::new(
+            settings.cold.data_dir.join("resources"),
+            ResourceRepository::new(database.clone()),
+            Arc::clone(&client),
+        ));
+        let sources = Arc::new(Registry::builtin(client));
+        let handlers: Vec<Arc<dyn TaskHandler>> = vec![ScrapeHandler::new(
+            Arc::clone(&sources),
+            metadata.clone(),
+            Arc::clone(&resources),
+        )];
         let tasks = TaskService::new(
             task_repository,
             handlers,
@@ -70,6 +80,7 @@ impl Runtime {
             database,
             metadata,
             tasks,
+            resources,
         })
     }
 }

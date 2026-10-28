@@ -88,12 +88,16 @@ version = "0.1.0"
 dependencies = [
  "amane-core",
  "amane-crawlers",
+ "amane-net",
  "async-trait",
+ "chrono",
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror",
  "tokio",
  "tokio-util",
+ "tracing",
 ]
 
 [[package]]

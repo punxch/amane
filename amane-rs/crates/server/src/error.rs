@@ -76,6 +76,13 @@ impl From<amane_core::TaskRepositoryError> for ApiError {
     }
 }
 
+impl From<amane_core::ResourceError> for ApiError {
+    fn from(error: amane_core::ResourceError) -> Self {
+        tracing::error!(error = %error, "资源仓储操作失败");
+        Self::Internal("资源仓储操作失败".to_owned())
+    }
+}
+
 impl From<NumberError> for ApiError {
     fn from(error: NumberError) -> Self {
         Self::InvalidNumber(error)

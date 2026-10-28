@@ -20,6 +20,8 @@ pub struct Metadata {
     pub label: Option<String>,
     pub series: Option<String>,
     pub poster_url: Option<String>,
+    /// 海报存到本地后的资源标识; 为 `None` 时详情页只能引用远端地址.
+    pub poster_resource_id: Option<i64>,
     pub content_type: ContentType,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -163,6 +165,21 @@ impl MetadataRepository {
         .await?;
 
         Ok(names)
+    }
+
+    /// 把条目指向一条资源. 资源表由资源仓储维护, 这里只写元数据侧的引用.
+    pub async fn set_poster_resource(
+        &self,
+        metadata_id: i64,
+        resource_id: i64,
+    ) -> Result<(), RepositoryError> {
+        sqlx::query("UPDATE metadata SET poster_resource_id = ?1 WHERE id = ?2")
+            .bind(resource_id)
+            .bind(metadata_id)
+            .execute(self.database.write())
+            .await?;
+
+        Ok(())
     }
 
     pub async fn list(&self, limit: u32, offset: u32) -> Result<Vec<Metadata>, RepositoryError> {

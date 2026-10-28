@@ -151,6 +151,12 @@ onMounted(refresh);
               关闭
             </button>
           </div>
+          <img
+            v-if="detail.poster_local_url"
+            :src="detail.poster_local_url"
+            alt=""
+            class="mt-3 w-full rounded-md border border-neutral-800 object-cover"
+          />
           <p class="mt-2 text-sm leading-snug text-neutral-300">{{ detail.title ?? "无标题" }}</p>
           <dl class="mt-3 space-y-1 text-xs">
             <div class="flex justify-between gap-3">
@@ -184,8 +190,11 @@ onMounted(refresh);
           >
             {{ detail.plot }}
           </p>
-          <p v-if="detail.poster_url" class="mt-2 truncate font-mono text-xs text-neutral-600">
-            {{ detail.poster_url }}
+          <p
+            v-if="detail.poster_url && !detail.poster_local_url"
+            class="mt-2 truncate font-mono text-xs text-amber-600"
+          >
+            海报尚未存到本地: {{ detail.poster_url }}
           </p>
         </section>
 

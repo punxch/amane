@@ -11,6 +11,8 @@ use serde::Deserialize;
 
 use amane_crawlers::{Capability, Registry};
 
+use crate::resource::ResourceStore;
+
 /// 刮削任务的载荷.
 #[derive(Debug, Deserialize)]
 struct ScrapePayload {
@@ -23,11 +25,20 @@ struct ScrapePayload {
 pub struct ScrapeHandler {
     sources: Arc<Registry>,
     metadata: MetadataRepository,
+    resources: Arc<ResourceStore>,
 }
 
 impl ScrapeHandler {
-    pub fn new(sources: Arc<Registry>, metadata: MetadataRepository) -> Arc<Self> {
-        Arc::new(Self { sources, metadata })
+    pub fn new(
+        sources: Arc<Registry>,
+        metadata: MetadataRepository,
+        resources: Arc<ResourceStore>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            sources,
+            metadata,
+            resources,
+        })
     }
 }
 
@@ -108,6 +119,26 @@ impl TaskHandler for ScrapeHandler {
             .info(format!("写入番号条目 {}", row.number))
             .await;
 
+        // 上游问题 (下载失败) 只告警; 本地写库失败才判任务失败.
+        if let Some(url) = scraped.poster_url.as_deref() {
+            context.logger.info("下载海报").await;
+            match self.resources.materialize(url).await {
+                Ok(resource) => {
+                    context
+                        .logger
+                        .info(format!("海报已存到本地: {}", resource.file_name))
+                        .await;
+                    self.metadata
+                        .set_poster_resource(row.id, resource.id)
+                        .await
+                        .map_err(|error| TaskError::Failed(format!("关联海报失败: {error}")))?;
+                }
+                Err(error) => {
+                    context.logger.warn(format!("海报下载失败: {error}")).await;
+                }
+            }
+        }
+
         Ok(TaskOutcome::done())
     }
 }
@@ -178,8 +209,24 @@ mod tests {
         let database = Database::open(&dir.path().join("amane.db"))
             .await
             .expect("应打开数据库");
-        let metadata = MetadataRepository::new(database);
-        let handler = ScrapeHandler::new(Arc::new(Registry::new(sources)), metadata.clone());
+        let metadata = MetadataRepository::new(database.clone());
+        let client = Arc::new(
+            amane_net::WebClient::new(
+                std::time::Duration::from_secs(5),
+                amane_net::RateLimiters::new(amane_net::Rate::per_second(1, 1.0)),
+            )
+            .expect("客户端应构造成功"),
+        );
+        let resources = Arc::new(crate::resource::ResourceStore::new(
+            dir.path().join("resources"),
+            amane_core::ResourceRepository::new(database),
+            client,
+        ));
+        let handler = ScrapeHandler::new(
+            Arc::new(Registry::new(sources)),
+            metadata.clone(),
+            resources,
+        );
 
         Fixture {
             dir,
