@@ -60,6 +60,13 @@ pub fn aggregate(items: &[(&str, ScrapedMetadata)]) -> Aggregated {
             &scraped.poster_url,
             |metadata| &mut metadata.poster_url,
         );
+        take_scalar(
+            &mut merged,
+            "cover_url",
+            source,
+            &scraped.cover_url,
+            |metadata| &mut metadata.cover_url,
+        );
 
         take_list(
             &mut merged,

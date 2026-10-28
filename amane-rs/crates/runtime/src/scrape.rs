@@ -114,6 +114,7 @@ impl TaskHandler for ScrapeHandler {
             label: scraped.label.as_deref(),
             series: scraped.series.as_deref(),
             poster_url: scraped.poster_url.as_deref(),
+            cover_url: scraped.cover_url.as_deref(),
             genres: Some(&scraped.genres),
             actors: Some(&scraped.actors),
         };
@@ -159,25 +160,76 @@ impl TaskHandler for ScrapeHandler {
         if poster_locked {
             context.logger.info("海报字段已锁定, 跳过下载").await;
         } else if let Some(url) = row.poster_url.as_deref() {
-            context.logger.info("下载海报").await;
-            match self.resources.materialize(url).await {
-                Ok(resource) => {
-                    context
-                        .logger
-                        .info(format!("海报已存到本地: {}", resource.file_name))
-                        .await;
-                    self.metadata
-                        .set_poster_resource(row.id, resource.id)
-                        .await
-                        .map_err(|error| TaskError::Failed(format!("关联海报失败: {error}")))?;
-                }
-                Err(error) => {
-                    context.logger.warn(format!("海报下载失败: {error}")).await;
-                }
-            }
+            self.store_image(&context, row.id, url, ImageKind::Poster)
+                .await?;
+        }
+        if let Some(url) = row.cover_url.as_deref() {
+            self.store_image(&context, row.id, url, ImageKind::Cover)
+                .await?;
         }
 
         Ok(TaskOutcome::done())
+    }
+}
+
+/// 两类图: 竖版海报与横版封面. 各自的登记位置不同, 其余流程一致.
+#[derive(Debug, Clone, Copy)]
+enum ImageKind {
+    Poster,
+    Cover,
+}
+
+impl ImageKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Poster => "海报",
+            Self::Cover => "封面",
+        }
+    }
+}
+
+/// 下载一张图并挂到条目上.
+///
+/// 下载失败只告警: 条目已经写好, 缺图是允许的降级. 本地写库失败才判任务失败.
+impl ScrapeHandler {
+    async fn store_image(
+        &self,
+        context: &TaskContext,
+        metadata_id: i64,
+        url: &str,
+        kind: ImageKind,
+    ) -> Result<(), TaskError> {
+        let label = kind.label();
+        context.logger.info(format!("下载{label}")).await;
+
+        let resource = match self.resources.materialize(url).await {
+            Ok(resource) => resource,
+            Err(error) => {
+                context
+                    .logger
+                    .warn(format!("{label}下载失败: {error}"))
+                    .await;
+                return Ok(());
+            }
+        };
+        context
+            .logger
+            .info(format!("{label}已存到本地: {}", resource.file_name))
+            .await;
+
+        let linked = match kind {
+            ImageKind::Poster => {
+                self.metadata
+                    .set_poster_resource(metadata_id, resource.id)
+                    .await
+            }
+            ImageKind::Cover => {
+                self.metadata
+                    .set_cover_resource(metadata_id, resource.id)
+                    .await
+            }
+        };
+        linked.map_err(|error| TaskError::Failed(format!("关联{label}失败: {error}")))
     }
 }
 
@@ -224,6 +276,11 @@ mod tests {
 
     enum StubOutcome {
         Hit(Option<&'static str>),
+        /// 命中, 且带两类图的地址; 地址不可达时用来验证降级.
+        HitWithImages {
+            poster: &'static str,
+            cover: &'static str,
+        },
         Transport,
         Parse {
             raw: &'static str,
@@ -241,6 +298,12 @@ mod tests {
             match self.outcome {
                 StubOutcome::Hit(title) => Ok(ScrapedMetadata {
                     title: title.map(|title| format!("{title} {number}")),
+                    ..ScrapedMetadata::default()
+                }),
+                StubOutcome::HitWithImages { poster, cover } => Ok(ScrapedMetadata {
+                    title: Some(format!("命中 {number}")),
+                    poster_url: Some(poster.to_owned()),
+                    cover_url: Some(cover.to_owned()),
                     ..ScrapedMetadata::default()
                 }),
                 StubOutcome::Transport => Err(SourceError::Transport {
@@ -280,6 +343,14 @@ mod tests {
                 StubOutcome::Hit(title)
             },
         )
+    }
+
+    fn source_with_images(
+        id: &'static str,
+        poster: &'static str,
+        cover: &'static str,
+    ) -> Box<dyn Source> {
+        stub(id, StubOutcome::HitWithImages { poster, cover })
     }
 
     fn unparsable(id: &'static str, raw: &'static str, extension: &'static str) -> Box<dyn Source> {
@@ -405,6 +476,45 @@ mod tests {
             stored.title.as_deref(),
             Some("人工标题"),
             "锁定字段不应被刮削覆盖"
+        );
+    }
+
+    #[tokio::test]
+    async fn image_download_failure_still_writes_entry() {
+        let fixture = fixture(vec![source_with_images(
+            "working",
+            "https://example.invalid/poster.jpg",
+            "https://example.invalid/cover.jpg",
+        )])
+        .await;
+
+        let outcome = run(
+            &fixture.handler,
+            fixture.dir.path(),
+            serde_json::json!({ "number": "ABC-123" }),
+        )
+        .await
+        .expect("下载失败不应让任务失败");
+
+        assert!(outcome.followups.is_empty());
+        let number = MediaNumber::parse("ABC-123").expect("应解析成功");
+        let row = fixture
+            .metadata
+            .find(&number)
+            .await
+            .expect("应查询成功")
+            .expect("条目应已写入");
+        assert_eq!(
+            row.poster_url.as_deref(),
+            Some("https://example.invalid/poster.jpg")
+        );
+        assert!(
+            row.poster_resource_id.is_none(),
+            "海报下载失败, 不应有本地资源"
+        );
+        assert!(
+            row.cover_resource_id.is_none(),
+            "封面下载失败, 不应有本地资源"
         );
     }
 

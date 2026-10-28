@@ -504,6 +504,12 @@ onMounted(async () => {
             alt=""
             class="mt-3 w-full rounded-md border border-neutral-800 object-cover"
           />
+          <img
+            v-if="detail.cover_local_url"
+            :src="detail.cover_local_url"
+            alt=""
+            class="mt-2 w-full rounded-md border border-neutral-800 object-cover"
+          />
 
           <div class="mt-3 space-y-1.5">
             <div

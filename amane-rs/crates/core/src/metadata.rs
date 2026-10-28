@@ -62,6 +62,10 @@ pub struct Metadata {
     pub poster_url: Option<String>,
     /// 海报存到本地后的资源标识; 为 `None` 时详情页只能引用远端地址.
     pub poster_resource_id: Option<i64>,
+    /// 横版封面 (剧照) 的远端地址.
+    pub cover_url: Option<String>,
+    /// 封面存到本地后的资源标识.
+    pub cover_resource_id: Option<i64>,
     /// 字段来源表; 键是字段名, 值是来源标识.
     pub field_sources: Option<Json<FieldSources>>,
     /// 分类. 按来源整份取首个非空, 不混拼.
@@ -157,6 +161,8 @@ pub struct ScrapedMetadata {
     pub actors: Vec<String>,
     pub genres: Vec<String>,
     pub poster_url: Option<String>,
+    /// 横版封面 (剧照); 与竖版海报分开, 详情页两个位置各用一张.
+    pub cover_url: Option<String>,
 }
 
 /// 一条分站快照行.
@@ -188,6 +194,8 @@ pub struct MetadataInput<'a> {
     pub label: Option<&'a str>,
     pub series: Option<&'a str>,
     pub poster_url: Option<&'a str>,
+    /// 横版封面 (剧照) 的远端地址.
+    pub cover_url: Option<&'a str>,
     /// `None` 表示本次不改动分类; `Some` 表示整体替换, 空列表即清空.
     pub genres: Option<&'a [String]>,
     /// `None` 表示本次不改动演员名单; `Some` 表示整体替换, 空列表即清空.
@@ -238,6 +246,7 @@ impl<'a> MetadataInput<'a> {
             label: keep(locks, LockableField::Label, self.label),
             series: keep(locks, LockableField::Series, self.series),
             poster_url: keep(locks, LockableField::PosterUrl, self.poster_url),
+            cover_url: self.cover_url,
             genres: self.genres,
             actors: self.actors,
         }
@@ -327,9 +336,9 @@ async fn upsert_row(
         r#"
         INSERT INTO metadata (
             number, title, plot, release_date, runtime_minutes,
-            maker, label, series, poster_url, genres, content_type, created_at, updated_at
+            maker, label, series, poster_url, cover_url, genres, content_type, created_at, updated_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)
         ON CONFLICT(number) DO UPDATE SET
             title = COALESCE(excluded.title, metadata.title),
             plot = COALESCE(excluded.plot, metadata.plot),
@@ -339,6 +348,7 @@ async fn upsert_row(
             label = COALESCE(excluded.label, metadata.label),
             series = COALESCE(excluded.series, metadata.series),
             poster_url = COALESCE(excluded.poster_url, metadata.poster_url),
+            cover_url = COALESCE(excluded.cover_url, metadata.cover_url),
             genres = COALESCE(excluded.genres, metadata.genres),
             content_type = excluded.content_type,
             updated_at = excluded.updated_at
@@ -354,6 +364,7 @@ async fn upsert_row(
     .bind(input.label)
     .bind(input.series)
     .bind(input.poster_url)
+    .bind(input.cover_url)
     .bind(input.genres.map(|values| Json(Genres::from(values))))
     .bind(number.content_type())
     .bind(now)
@@ -958,6 +969,21 @@ impl MetadataRepository {
         resource_id: i64,
     ) -> Result<(), RepositoryError> {
         sqlx::query("UPDATE metadata SET poster_resource_id = ?1 WHERE id = ?2")
+            .bind(resource_id)
+            .bind(metadata_id)
+            .execute(self.database.write())
+            .await?;
+
+        Ok(())
+    }
+
+    /// 把条目的封面指向某条资源.
+    pub async fn set_cover_resource(
+        &self,
+        metadata_id: i64,
+        resource_id: i64,
+    ) -> Result<(), RepositoryError> {
+        sqlx::query("UPDATE metadata SET cover_resource_id = ?1 WHERE id = ?2")
             .bind(resource_id)
             .bind(metadata_id)
             .execute(self.database.write())

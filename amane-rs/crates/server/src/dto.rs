@@ -24,6 +24,10 @@ pub struct MetadataDto {
     pub poster_url: Option<String>,
     /// 海报在服务端的地址; 为 `None` 时表示尚未存到本地.
     pub poster_local_url: Option<String>,
+    /// 横版封面的远端地址.
+    pub cover_url: Option<String>,
+    /// 封面在服务端的地址; 为 `None` 时表示尚未存到本地.
+    pub cover_local_url: Option<String>,
     /// 演员名单; 列表端点不返回, 只有详情端点填充.
     pub actors: Vec<String>,
     /// 本次刮削命中的来源标识; 只有详情端点填充.
@@ -63,6 +67,10 @@ impl From<Metadata> for MetadataDto {
             poster_url: value.poster_url,
             poster_local_url: value
                 .poster_resource_id
+                .map(|id| format!("/api/resources/{id}")),
+            cover_url: value.cover_url,
+            cover_local_url: value
+                .cover_resource_id
                 .map(|id| format!("/api/resources/{id}")),
             actors: Vec::new(),
             sources: Vec::new(),

@@ -186,6 +186,8 @@ fn parse_digital(response: &Value, number: &MediaNumber) -> Result<ScrapedMetada
         genres: names(&content["genres"]),
         poster_url: text(&content["packageImage"]["largeUrl"])
             .or_else(|| text(&content["packageImage"]["mediumUrl"])),
+        // 数字版接口只给竖版包装图, 没有横版剧照; 封面由其它来源补.
+        cover_url: None,
     })
 }
 

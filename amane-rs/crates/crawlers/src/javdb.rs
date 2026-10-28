@@ -127,7 +127,10 @@ fn parse_detail(html: &str, number: &MediaNumber) -> Result<ScrapedMetadata, Sou
     let title_selector = Selector::parse("h2.title strong.current-title").expect("固定选择器");
     let origin_selector = Selector::parse("span.origin-title").expect("固定选择器");
 
+    let (poster_url, cover_url) = cover_images(&document);
     let mut metadata = ScrapedMetadata {
+        poster_url,
+        cover_url,
         title: document
             .select(&title_selector)
             .next()
@@ -189,6 +192,36 @@ fn parse_detail(html: &str, number: &MediaNumber) -> Result<ScrapedMetadata, Sou
     }
 
     Ok(metadata)
+}
+
+/// 竖版海报与横版封面.
+///
+/// 详情页把两张图都标成 `video-cover`, 靠 `data-movie-detail-target="cover"` 区分:
+/// 带这个属性的是横版剧照, 另一个是竖版包装图.
+fn cover_images(document: &Html) -> (Option<String>, Option<String>) {
+    let selector = Selector::parse("img.video-cover").expect("固定选择器");
+    let mut poster = None;
+    let mut cover = None;
+
+    for element in document.select(&selector) {
+        let Some(src) = element.value().attr("src").map(str::trim) else {
+            continue;
+        };
+        if src.is_empty() {
+            continue;
+        }
+        let is_cover = element
+            .value()
+            .attr("data-movie-detail-target")
+            .is_some_and(|value| value == "cover");
+        if is_cover {
+            cover.get_or_insert_with(|| src.to_owned());
+        } else {
+            poster.get_or_insert_with(|| src.to_owned());
+        }
+    }
+
+    (poster, cover)
 }
 
 fn text_of(element: &scraper::ElementRef<'_>) -> String {
@@ -322,6 +355,21 @@ mod tests {
         assert_eq!(scraped.genres, vec!["ドラマ"]);
     }
 
+    /// 详情页的两张图: 带 `data-movie-detail-target="cover"` 的是横版剧照, 另一张是竖版海报.
+    const DETAIL_WITH_IMAGES: &str = r#"
+        <div class="video-detail">
+          <h2 class="title is-4"><strong class="current-title">标题</strong></h2>
+          <div class="column column-video-cover">
+            <img class="video-cover" width="600" height="404" data-movie-detail-target="cover"
+                 src="https://example.invalid/covers/zy/ZY5eq.jpg" />
+          </div>
+          <nav class="panel movie-panel-info">
+            <div class="panel-block"><strong>番號:</strong><span class="value">SSIS-001</span></div>
+          </nav>
+          <img src="https://example.invalid/posters/zy/ZY5eq.jpg" class="video-cover" />
+        </div>
+    "#;
+
     const DETAIL_EN: &str = r#"
         <div class="video-detail">
           <h2 class="title is-4"><strong class="current-title">English title</strong></h2>
@@ -359,6 +407,39 @@ mod tests {
             }
             other => panic!("应判解析失败, 实际 {other:?}"),
         }
+    }
+
+    #[test]
+    fn extracts_poster_and_cover_separately() {
+        let number = MediaNumber::parse("SSIS-001").expect("应解析成功");
+
+        let scraped = parse_detail(DETAIL_WITH_IMAGES, &number).expect("应解析成功");
+
+        assert_eq!(
+            scraped.cover_url.as_deref(),
+            Some("https://example.invalid/covers/zy/ZY5eq.jpg"),
+            "横版剧照归入封面"
+        );
+        assert_eq!(
+            scraped.poster_url.as_deref(),
+            Some("https://example.invalid/posters/zy/ZY5eq.jpg"),
+            "竖版包装图归入海报"
+        );
+    }
+
+    #[test]
+    fn missing_cover_leaves_only_poster() {
+        let number = MediaNumber::parse("SSIS-001").expect("应解析成功");
+        let html = DETAIL_WITH_IMAGES.replace("data-movie-detail-target=\"cover\"", "");
+
+        let scraped = parse_detail(&html, &number).expect("应解析成功");
+
+        assert!(scraped.cover_url.is_none(), "没有横版图时封面为空");
+        assert_eq!(
+            scraped.poster_url.as_deref(),
+            Some("https://example.invalid/covers/zy/ZY5eq.jpg"),
+            "剩下的那张按海报处理"
+        );
     }
 
     #[test]
