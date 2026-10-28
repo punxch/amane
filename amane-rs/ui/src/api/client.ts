@@ -36,6 +36,7 @@ export type CreateLibraryRequest = Schemas["CreateLibraryRequest"];
 export type OrganizePreviewDto = Schemas["OrganizePreviewDto"];
 export type CleanupManifestDto = Schemas["CleanupManifestDto"];
 export type TrashPageDto = Schemas["TrashPageDto"];
+export type HealthResponse = Schemas["HealthResponse"];
 
 /** 保存配置的请求体; 字段与后端契约一致, 未知取值由后端拒绝. */
 export type ConfigBody = UpdateConfigRequest;
@@ -72,10 +73,21 @@ const TOKEN_KEY = "amane_token";
  * 外壳以 `/?token=…` 打开界面; 令牌只存进本次会话, 不落盘.
  */
 export function captureToken(): void {
-  const token = new URLSearchParams(window.location.search).get("token");
-  if (token !== null) {
-    window.sessionStorage.setItem(TOKEN_KEY, token);
+  const params = new URLSearchParams(window.location.search);
+  const token = params.get("token");
+  if (token === null) {
+    return;
   }
+  window.sessionStorage.setItem(TOKEN_KEY, token);
+
+  // 令牌只留在本次会话: 留在地址栏会被收藏、转发, 也会被访问日志按 URI 记下来.
+  params.delete("token");
+  const query = params.toString();
+  window.history.replaceState(
+    {},
+    "",
+    `${window.location.pathname}${query === "" ? "" : `?${query}`}${window.location.hash}`,
+  );
 }
 
 function authHeaders(): Record<string, string> {
@@ -143,6 +155,8 @@ export interface MetadataQuery {
 }
 
 export const api = {
+  health: (): Promise<HealthResponse> => request("/api/health"),
+
   list: (query: MetadataQuery = {}): Promise<MetadataPage> => {
     const params = new URLSearchParams({
       limit: String(query.limit ?? 50),

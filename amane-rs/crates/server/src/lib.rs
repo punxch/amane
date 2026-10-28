@@ -124,11 +124,8 @@ pub fn build_router_with_ui(state: AppState, ui: Option<PathBuf>) -> Router {
         .layer(middleware::from_fn_with_state(state.clone(), require_token))
         .with_state(state);
 
-    let router = Router::new()
-        .nest("/api", api)
-        .layer(middleware::from_fn(logging::log_requests));
-
-    match ui {
+    let router = Router::new().nest("/api", api);
+    let router = match ui {
         Some(dir) => mount_ui(router, dir),
         // 前端产物缺失时给出可读提示, 而不是白屏或纯文本 404.
         None => router.fallback(|| async {
@@ -139,7 +136,10 @@ pub fn build_router_with_ui(state: AppState, ui: Option<PathBuf>) -> Router {
             )
                 .into_response()
         }),
-    }
+    };
+
+    // 日志层放在最外层: 静态文件请求同样记录, 否则「哪个页面慢」无从判断.
+    router.layer(middleware::from_fn(logging::log_requests))
 }
 
 /// 前端产物与接口共用端口: 命中文件时按扩展名返回, 未命中回退到 `index.html`.
