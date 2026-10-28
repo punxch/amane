@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
-/// 条目的传输形态.
+/// 番号条目的传输形态.
 ///
 /// 与 `amane_core::Metadata` 分开: 内核不感知传输层, 字段增删不会波及领域类型.
 #[derive(Debug, Serialize, ToSchema)]
@@ -28,7 +28,7 @@ pub struct MetadataDto {
     pub sources: Vec<String>,
     /// 字段名 → 贡献该字段的来源标识.
     pub field_sources: std::collections::BTreeMap<String, String>,
-    /// 条目类型, 取值见 `ContentType`.
+    /// 类型, 取值见 `ContentType`.
     pub content_type: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -81,9 +81,34 @@ pub struct CreateMetadataRequest {
 #[derive(Debug, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct ListQuery {
-    /// 单页条数, 默认 50, 上限 200.
+    /// 单页条数, 默认 50, 上限 200; 小于 1 按 1 处理.
     pub limit: Option<u32>,
     pub offset: Option<u32>,
+    /// 类型: censored / uncensored / chinese / western / fc2 / amateur / hentai.
+    pub content_type: Option<String>,
+    /// 来源标识; 只列出该来源贡献过内容的番号条目.
+    pub source: Option<String>,
+    /// 关键字, 匹配番号与标题, 忽略大小写.
+    pub q: Option<String>,
+}
+
+/// 筛选可选项. 取值域由服务端给出, 界面不自行维护枚举.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct FilterOptions {
+    pub content_types: Vec<ContentTypeOption>,
+    pub sources: Vec<SourceOption>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ContentTypeOption {
+    pub value: String,
+    pub label: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SourceOption {
+    pub id: String,
+    pub label: String,
 }
 
 #[derive(Debug, Deserialize, IntoParams)]

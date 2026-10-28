@@ -13,7 +13,7 @@ pub mod task;
 
 pub use content_type::ContentType;
 pub use db::{Database, DbError};
-pub use metadata::{Metadata, MetadataInput, MetadataRepository, RepositoryError};
+pub use metadata::{Metadata, MetadataFilter, MetadataInput, MetadataRepository, RepositoryError};
 pub use number::{MediaNumber, NumberError};
 pub use resource::{Resource, ResourceError, ResourceRepository};
 pub use task::{

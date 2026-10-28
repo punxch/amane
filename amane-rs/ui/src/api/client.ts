@@ -18,6 +18,7 @@ export type TaskPage = Schemas["TaskPage"];
 export type CreateTaskRequest = Schemas["CreateTaskRequest"];
 export type TaskLogEntry = Schemas["TaskLogEntry"];
 export type TaskLogPage = Schemas["TaskLogPage"];
+export type FilterOptions = Schemas["FilterOptions"];
 
 export class ApiError extends Error {
   public readonly code: string;
@@ -30,10 +31,16 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
-    ...init,
-    headers: { "content-type": "application/json", ...init?.headers },
-  });
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      ...init,
+      headers: { "content-type": "application/json", ...init?.headers },
+    });
+  } catch {
+    // 网络层失败没有响应体, 单独给一个错误码, 界面据此提示后端不可用.
+    throw new ApiError("unreachable", "无法连接后端服务");
+  }
 
   if (!response.ok) {
     const body: unknown = await response.json().catch(() => null);
@@ -57,9 +64,35 @@ function isApiErrorBody(value: unknown): value is ApiErrorBody {
   return typeof candidate.code === "string" && typeof candidate.message === "string";
 }
 
+/** 列表查询. 空字符串与 `null` 都表示不限制. */
+export interface MetadataQuery {
+  keyword?: string;
+  contentType?: string | null;
+  source?: string | null;
+  limit?: number;
+  offset?: number;
+}
+
 export const api = {
-  list: (limit = 50, offset = 0): Promise<MetadataPage> =>
-    request(`/api/metadata?limit=${limit}&offset=${offset}`),
+  list: (query: MetadataQuery = {}): Promise<MetadataPage> => {
+    const params = new URLSearchParams({
+      limit: String(query.limit ?? 50),
+      offset: String(query.offset ?? 0),
+    });
+    const keyword = query.keyword?.trim();
+    if (keyword !== undefined && keyword !== "") {
+      params.set("q", keyword);
+    }
+    if (query.contentType !== null && query.contentType !== undefined && query.contentType !== "") {
+      params.set("content_type", query.contentType);
+    }
+    if (query.source !== null && query.source !== undefined && query.source !== "") {
+      params.set("source", query.source);
+    }
+    return request(`/api/metadata?${params.toString()}`);
+  },
+
+  filters: (): Promise<FilterOptions> => request("/api/filters"),
 
   metadata: (number: string): Promise<MetadataDto> =>
     request(`/api/metadata/${encodeURIComponent(number)}`),

@@ -1,10 +1,12 @@
 use amane_core::TaskLogger;
 use amane_core::config::Settings;
 use amane_core::{
-    MediaNumber, MetadataInput, TaskFilter, TaskKind, TaskServiceError, TaskSpec, TaskStatus,
+    MediaNumber, MetadataFilter, MetadataInput, TaskFilter, TaskKind, TaskServiceError, TaskSpec,
+    TaskStatus,
 };
 use axum::Json;
 use axum::Router;
+use axum::extract::rejection::QueryRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
@@ -12,8 +14,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 
 use crate::dto::{
-    CreateMetadataRequest, CreateTaskRequest, ExtractedNumber, HealthResponse, ListQuery,
-    MetadataDto, MetadataPage, TaskDto, TaskListQuery, TaskLogEntry, TaskLogPage, TaskPage,
+    ContentTypeOption, CreateMetadataRequest, CreateTaskRequest, ExtractedNumber, FilterOptions,
+    HealthResponse, ListQuery, MetadataDto, MetadataPage, SourceOption, TaskDto, TaskListQuery,
+    TaskLogEntry, TaskLogPage, TaskPage,
 };
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -26,6 +29,7 @@ pub fn router() -> Router<AppState> {
         .route("/health", get(health))
         .route("/metadata", get(list_metadata).post(create_metadata))
         .route("/metadata/{number}", get(get_metadata))
+        .route("/filters", get(filter_options))
         .route("/number/extract", get(extract_number))
         .route("/config/schema", get(config_schema))
         .route("/resources/{id}", get(get_resource))
@@ -54,15 +58,18 @@ pub async fn health() -> Json<HealthResponse> {
 )]
 pub async fn list_metadata(
     State(state): State<AppState>,
-    Query(query): Query<ListQuery>,
+    query: Result<Query<ListQuery>, QueryRejection>,
 ) -> Result<Json<MetadataPage>, ApiError> {
+    let Query(query) = parse_query(query)?;
     let limit = query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let offset = query.offset.unwrap_or(0);
+    let filter = metadata_filter(&state, &query)?;
     let repository = &state.runtime.metadata;
 
-    let total = repository.count().await?;
+    // 总数与列表用同一套条件, 否则翻到最后一页会出现空白页.
+    let total = repository.count(&filter).await?;
     let items = repository
-        .list(limit, offset)
+        .list(&filter, limit, offset)
         .await?
         .into_iter()
         .map(MetadataDto::from)
@@ -147,8 +154,9 @@ pub async fn get_metadata(
     )
 )]
 pub async fn extract_number(
-    Query(query): Query<crate::dto::ExtractQuery>,
+    query: Result<Query<crate::dto::ExtractQuery>, QueryRejection>,
 ) -> Result<Json<ExtractedNumber>, ApiError> {
+    let Query(query) = parse_query(query)?;
     let number = MediaNumber::extract(&query.text).ok_or_else(|| ApiError::NotFound {
         what: format!("无法从「{}」识别番号", query.text),
     })?;
@@ -184,8 +192,9 @@ pub async fn config_schema() -> Json<serde_json::Value> {
 )]
 pub async fn list_tasks(
     State(state): State<AppState>,
-    Query(query): Query<TaskListQuery>,
+    query: Result<Query<TaskListQuery>, QueryRejection>,
 ) -> Result<Json<TaskPage>, ApiError> {
+    let Query(query) = parse_query(query)?;
     let status = match query.status.as_deref() {
         None => None,
         Some(value) => Some(TaskStatus::parse(value).ok_or_else(|| ApiError::Invalid {
@@ -352,6 +361,97 @@ pub async fn task_log(
     Ok(Json(TaskLogPage {
         items: lines.into_iter().map(TaskLogEntry::from).collect(),
     }))
+}
+
+/// 查询参数解析失败也走统一错误体: 框架默认的纯文本 400 会让界面拿不到错误码.
+fn parse_query<T>(query: Result<Query<T>, QueryRejection>) -> Result<Query<T>, ApiError> {
+    query.map_err(|error| ApiError::Invalid {
+        code: "invalid_query",
+        message: format!("查询参数不合法: {error}"),
+    })
+}
+
+/// 校验并转换筛选参数. 取值域有界的 (类型、来源) 在这里拒绝未知值,
+/// 而不是静默返回空列表, 否则拼错一个字母看起来就像没有数据.
+fn metadata_filter(state: &AppState, query: &ListQuery) -> Result<MetadataFilter, ApiError> {
+    let content_type = match query.content_type.as_deref() {
+        None => None,
+        Some("") => None,
+        Some(value) => {
+            Some(
+                amane_core::ContentType::parse(value).ok_or_else(|| ApiError::Invalid {
+                    code: "invalid_content_type",
+                    message: format!("未知类型: {value}"),
+                })?,
+            )
+        }
+    };
+
+    let source = match query.source.as_deref() {
+        None => None,
+        Some("") => None,
+        Some(value) => {
+            let known = state
+                .runtime
+                .sources
+                .iter()
+                .any(|source| source.descriptor().id == value);
+            if !known {
+                return Err(ApiError::Invalid {
+                    code: "unknown_source",
+                    message: format!("未知来源: {value}"),
+                });
+            }
+            Some(value.to_owned())
+        }
+    };
+
+    let keyword = query
+        .q
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+
+    Ok(MetadataFilter {
+        content_type,
+        source,
+        keyword,
+    })
+}
+
+/// 筛选下拉框的可选项: 类型是封闭枚举, 来源取当前登记表.
+#[utoipa::path(
+    get,
+    path = "/api/filters",
+    tag = "metadata",
+    responses(
+        (status = 200, body = FilterOptions),
+        (status = 401, body = crate::error::ErrorBody)
+    )
+)]
+pub async fn filter_options(State(state): State<AppState>) -> Json<FilterOptions> {
+    let content_types = amane_core::ContentType::ALL
+        .into_iter()
+        .map(|value| ContentTypeOption {
+            value: value.as_str().to_owned(),
+            label: value.label().to_owned(),
+        })
+        .collect();
+    let sources = state
+        .runtime
+        .sources
+        .iter()
+        .map(|source| SourceOption {
+            id: source.descriptor().id.to_owned(),
+            label: source.descriptor().label.to_owned(),
+        })
+        .collect();
+
+    Json(FilterOptions {
+        content_types,
+        sources,
+    })
 }
 
 fn map_task_error(error: TaskServiceError) -> ApiError {

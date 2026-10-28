@@ -30,6 +30,7 @@ pub use state::{AppState, Runtime};
         routes::get_metadata,
         routes::extract_number,
         routes::config_schema,
+        routes::filter_options,
         routes::get_resource,
         routes::list_tasks,
         routes::create_task,
@@ -48,6 +49,9 @@ pub use state::{AppState, Runtime};
         dto::TaskDto,
         dto::TaskPage,
         dto::CreateTaskRequest,
+        dto::FilterOptions,
+        dto::ContentTypeOption,
+        dto::SourceOption,
         dto::TaskLogEntry,
         dto::TaskLogPage,
         error::ErrorBody,
@@ -237,6 +241,134 @@ mod tests {
         let value: serde_json::Value = serde_json::from_slice(&body).expect("应为 JSON");
         assert_eq!(value["total"], 1);
         assert_eq!(value["items"][0]["number"], "SSIS-001");
+    }
+
+    /// 创建三条不同类型的手工番号条目: 有码、FC2、以及标题里带 `%` 的一条.
+    async fn seeded_app() -> (tempfile::TempDir, axum::Router) {
+        let (dir, app) = app(None).await;
+        for body in [
+            r#"{"number":"ABC-001","title":"第一部"}"#,
+            r#"{"number":"FC2-PPV-1234567","title":"第二部"}"#,
+            r#"{"number":"XYZ-100","title":"百分比 100% 的片子"}"#,
+        ] {
+            let (status, _) = call(app.clone(), Method::POST, "/api/metadata", Some(body)).await;
+            assert_eq!(status, StatusCode::CREATED, "夹具写入应成功: {body}");
+        }
+
+        (dir, app)
+    }
+
+    #[tokio::test]
+    async fn metadata_list_filters_by_type_and_keyword() {
+        let (_dir, app) = seeded_app().await;
+
+        let (status, page) = call(
+            app.clone(),
+            Method::GET,
+            "/api/metadata?content_type=fc2",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(page["total"], 1, "按类型筛选的总数应只计命中的条目");
+        assert_eq!(page["items"][0]["number"], "FC2-1234567");
+
+        let (status, page) = call(app.clone(), Method::GET, "/api/metadata?q=abc", None).await;
+        assert_eq!(status, StatusCode::OK, "小写关键字应被接受");
+        assert_eq!(page["total"], 1);
+        assert_eq!(page["items"][0]["number"], "ABC-001");
+
+        // `%` 在 LIKE 里是通配符, 必须按字面匹配, 否则一条会变成三条.
+        let (_, page) = call(app.clone(), Method::GET, "/api/metadata?q=100%25", None).await;
+        assert_eq!(page["total"], 1, "关键字里的 `%` 不应变成通配符");
+        assert_eq!(page["items"][0]["number"], "XYZ-100");
+
+        let (_, page) = call(app.clone(), Method::GET, "/api/metadata?q=不存在的词", None).await;
+        assert_eq!(page["total"], 0);
+        assert_eq!(page["items"].as_array().map(Vec::len), Some(0));
+    }
+
+    #[tokio::test]
+    async fn metadata_list_pages_with_consistent_total() {
+        let (_dir, app) = seeded_app().await;
+
+        let (_, first) = call(app.clone(), Method::GET, "/api/metadata?limit=2", None).await;
+        assert_eq!(first["total"], 3);
+        assert_eq!(first["items"].as_array().map(Vec::len), Some(2));
+
+        let (_, last) = call(
+            app.clone(),
+            Method::GET,
+            "/api/metadata?limit=2&offset=2",
+            None,
+        )
+        .await;
+        assert_eq!(last["total"], 3, "总数不应随分页变化");
+        assert_eq!(last["items"].as_array().map(Vec::len), Some(1));
+
+        let (_, beyond) = call(app.clone(), Method::GET, "/api/metadata?offset=99", None).await;
+        assert_eq!(beyond["total"], 3, "越界偏移仍应报告总数");
+        assert_eq!(beyond["items"].as_array().map(Vec::len), Some(0));
+
+        let (status, clamped) = call(app.clone(), Method::GET, "/api/metadata?limit=0", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            clamped["items"].as_array().map(Vec::len),
+            Some(1),
+            "0 应按下限 1 处理"
+        );
+    }
+
+    #[tokio::test]
+    async fn metadata_list_rejects_unknown_filter_values() {
+        let (_dir, app) = seeded_app().await;
+
+        let (status, body) = call(
+            app.clone(),
+            Method::GET,
+            "/api/metadata?content_type=bogus",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["code"], "invalid_content_type");
+
+        let (status, body) = call(
+            app.clone(),
+            Method::GET,
+            "/api/metadata?source=nowhere",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["code"], "unknown_source");
+
+        let (status, body) = call(app.clone(), Method::GET, "/api/metadata?limit=abc", None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "非数字分页参数应被拒绝");
+        assert!(!body["message"].as_str().unwrap_or_default().is_empty());
+    }
+
+    #[tokio::test]
+    async fn filter_options_come_from_registry() {
+        let (_dir, app) = app(None).await;
+
+        let (status, options) = call(app, Method::GET, "/api/filters", None).await;
+
+        assert_eq!(status, StatusCode::OK);
+        let types = options["content_types"].as_array().expect("类型应为数组");
+        assert_eq!(types.len(), 7, "每一种条目类型都要出现在可选项里");
+        assert!(types.iter().all(|item| {
+            item["label"]
+                .as_str()
+                .is_some_and(|label| !label.is_empty())
+        }));
+
+        let sources = options["sources"].as_array().expect("来源应为数组");
+        let ids: Vec<&str> = sources
+            .iter()
+            .filter_map(|item| item["id"].as_str())
+            .collect();
+        assert_eq!(ids, ["dmm", "javdb"]);
     }
 
     #[tokio::test]
@@ -438,6 +570,7 @@ mod tests {
             "/api/metadata/{number}",
             "/api/number/extract",
             "/api/config/schema",
+            "/api/filters",
             "/api/tasks",
             "/api/tasks/{id}",
             "/api/tasks/{id}/cancel",

@@ -1,11 +1,44 @@
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::FromRow;
+use sqlx::{FromRow, QueryBuilder, Sqlite};
 use thiserror::Error;
 
 use crate::content_type::ContentType;
 use crate::db::Database;
 use crate::number::MediaNumber;
+
+/// 列表筛选条件. 各项为空表示不限制, 组合时取交集.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MetadataFilter {
+    pub content_type: Option<ContentType>,
+    /// 贡献过该番号条目的来源标识.
+    pub source: Option<String>,
+    /// 关键字: 匹配番号或标题, 忽略大小写.
+    pub keyword: Option<String>,
+}
+
+impl MetadataFilter {
+    /// 关键字转成 LIKE 模式. `%` 与 `_` 是通配符, 出现在关键字里必须转义,
+    /// 否则用户搜 `100%` 会命中所有番号条目.
+    fn pattern(&self) -> Option<String> {
+        let keyword = self.keyword.as_deref()?.trim();
+        if keyword.is_empty() {
+            return None;
+        }
+
+        let mut escaped = String::with_capacity(keyword.len() + 2);
+        escaped.push('%');
+        for character in keyword.chars() {
+            if matches!(character, '\\' | '%' | '_') {
+                escaped.push('\\');
+            }
+            escaped.push(character);
+        }
+        escaped.push('%');
+
+        Some(escaped)
+    }
+}
 
 /// 番号条目. 以番号为键, 承载多源聚合后的影片信息.
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -29,7 +62,7 @@ pub struct Metadata {
     pub updated_at: DateTime<Utc>,
 }
 
-/// 写入条目的字段集合.
+/// 写入番号条目的字段集合.
 ///
 /// 与 [`Metadata`] 分开: 写入时没有标识与时间戳。字段为 `None` 表示本次没有该值,
 /// 是否覆盖既有值由各字段自己的规则决定。
@@ -47,13 +80,38 @@ pub struct MetadataInput<'a> {
     pub actors: Option<&'a [String]>,
 }
 
+/// 把筛选条件追加到 `WHERE` 子句; `list` 与 `count` 共用, 避免两处条件漂移.
+fn push_conditions(builder: &mut QueryBuilder<'_, Sqlite>, filter: &MetadataFilter) {
+    builder.push(" WHERE 1 = 1");
+
+    if let Some(content_type) = filter.content_type {
+        builder.push(" AND content_type = ").push_bind(content_type);
+    }
+
+    if let Some(source) = filter.source.as_deref() {
+        builder
+            .push(" AND EXISTS (SELECT 1 FROM source_snapshot WHERE source_snapshot.metadata_id = metadata.id AND source_snapshot.source_id = ")
+            .push_bind(source.to_owned())
+            .push(")");
+    }
+
+    if let Some(pattern) = filter.pattern() {
+        builder
+            .push(" AND (number LIKE ")
+            .push_bind(pattern.clone())
+            .push(" ESCAPE '\\' OR title LIKE ")
+            .push_bind(pattern)
+            .push(" ESCAPE '\\')");
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum RepositoryError {
     #[error("数据库操作失败: {0}")]
     Database(#[from] sqlx::Error),
 }
 
-/// 条目仓储. 写操作经由写池, 读操作走读池.
+/// 番号条目仓储. 写操作经由写池, 读操作走读池.
 #[derive(Debug, Clone)]
 pub struct MetadataRepository {
     database: Database,
@@ -152,7 +210,7 @@ impl MetadataRepository {
         Ok(row)
     }
 
-    /// 条目的演员名单, 按写入时的顺序.
+    /// 番号条目的演员名单, 按写入时的顺序.
     pub async fn actors(&self, metadata_id: i64) -> Result<Vec<String>, RepositoryError> {
         let names = sqlx::query_scalar::<_, String>(
             r#"
@@ -214,7 +272,7 @@ impl MetadataRepository {
         Ok(())
     }
 
-    /// 条目的各来源快照, 按来源标识排序.
+    /// 番号条目的各来源快照, 按来源标识排序.
     pub async fn snapshots(
         &self,
         metadata_id: i64,
@@ -229,7 +287,7 @@ impl MetadataRepository {
         Ok(rows)
     }
 
-    /// 把条目指向一条资源. 资源表由资源仓储维护, 这里只写元数据侧的引用.
+    /// 把番号条目指向一条资源. 资源表由资源仓储维护, 这里只写元数据侧的引用.
     pub async fn set_poster_resource(
         &self,
         metadata_id: i64,
@@ -244,20 +302,35 @@ impl MetadataRepository {
         Ok(())
     }
 
-    pub async fn list(&self, limit: u32, offset: u32) -> Result<Vec<Metadata>, RepositoryError> {
-        let rows = sqlx::query_as::<_, Metadata>(
-            "SELECT * FROM metadata ORDER BY updated_at DESC, id DESC LIMIT ?1 OFFSET ?2",
-        )
-        .bind(i64::from(limit))
-        .bind(i64::from(offset))
-        .fetch_all(self.database.read())
-        .await?;
+    pub async fn list(
+        &self,
+        filter: &MetadataFilter,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<Metadata>, RepositoryError> {
+        let mut builder = QueryBuilder::<Sqlite>::new("SELECT * FROM metadata");
+        push_conditions(&mut builder, filter);
+        builder
+            .push(" ORDER BY updated_at DESC, id DESC LIMIT ")
+            .push_bind(i64::from(limit))
+            .push(" OFFSET ")
+            .push_bind(i64::from(offset));
+
+        let rows = builder
+            .build_query_as::<Metadata>()
+            .fetch_all(self.database.read())
+            .await?;
 
         Ok(rows)
     }
 
-    pub async fn count(&self) -> Result<i64, RepositoryError> {
-        let total = sqlx::query_scalar("SELECT count(*) FROM metadata")
+    /// 命中总数. 与 `list` 使用同一套条件, 分页时两者必须一致.
+    pub async fn count(&self, filter: &MetadataFilter) -> Result<i64, RepositoryError> {
+        let mut builder = QueryBuilder::<Sqlite>::new("SELECT count(*) FROM metadata");
+        push_conditions(&mut builder, filter);
+
+        let total = builder
+            .build_query_scalar::<i64>()
             .fetch_one(self.database.read())
             .await?;
 
@@ -267,7 +340,7 @@ impl MetadataRepository {
 
 #[cfg(test)]
 mod tests {
-    use super::{MetadataInput, MetadataRepository};
+    use super::{MetadataFilter, MetadataInput, MetadataRepository};
     use crate::content_type::ContentType;
     use crate::db::Database;
     use crate::number::MediaNumber;
@@ -309,7 +382,13 @@ mod tests {
             "空标题不应覆盖既有值"
         );
         assert_eq!(second.content_type, ContentType::Censored);
-        assert_eq!(repository.count().await.expect("应统计成功"), 1);
+        assert_eq!(
+            repository
+                .count(&MetadataFilter::default())
+                .await
+                .expect("应统计成功"),
+            1
+        );
     }
 
     #[tokio::test]
@@ -377,6 +456,173 @@ mod tests {
         );
     }
 
+    /// 创建三条不同类型、带来源快照的番号条目, 供筛选用例共用.
+    async fn seeded() -> (tempfile::TempDir, MetadataRepository) {
+        let (dir, repository) = repository().await;
+
+        // 类型由番号自身决定 (见 `MediaNumber::content_type`), 因此这里按形态选择番号.
+        let cases = [
+            ("ABC-001", "第一部", &["dmm", "javdb"][..]),
+            ("FC2-PPV-1234567", "第二部", &["javdb"][..]),
+            ("XYZ-100", "百分比 100% 的片子", &[][..]),
+        ];
+        for (raw, title, sources) in cases {
+            let number = MediaNumber::parse(raw).expect("应解析成功");
+            let input = MetadataInput {
+                title: Some(title),
+                ..MetadataInput::default()
+            };
+            let row = repository
+                .upsert(&number, &input)
+                .await
+                .expect("应写入成功");
+            let snapshots: Vec<(String, String)> = sources
+                .iter()
+                .map(|source| ((*source).to_owned(), "{}".to_owned()))
+                .collect();
+            repository
+                .replace_snapshots(row.id, &snapshots)
+                .await
+                .expect("应写入快照");
+        }
+
+        (dir, repository)
+    }
+
+    #[tokio::test]
+    async fn list_matches_each_filter() {
+        let (_dir, repository) = seeded().await;
+        let cases: &[(&str, MetadataFilter, &[&str])] = &[
+            (
+                "按类型",
+                MetadataFilter {
+                    content_type: Some(ContentType::Fc2),
+                    ..MetadataFilter::default()
+                },
+                &["FC2-1234567"],
+            ),
+            (
+                "按来源",
+                MetadataFilter {
+                    source: Some("dmm".to_owned()),
+                    ..MetadataFilter::default()
+                },
+                &["ABC-001"],
+            ),
+            (
+                "番号关键字",
+                MetadataFilter {
+                    keyword: Some("abc-00".to_owned()),
+                    ..MetadataFilter::default()
+                },
+                &["ABC-001"],
+            ),
+            (
+                "标题关键字",
+                MetadataFilter {
+                    keyword: Some("第二部".to_owned()),
+                    ..MetadataFilter::default()
+                },
+                &["FC2-1234567"],
+            ),
+            (
+                "关键字忽略大小写",
+                MetadataFilter {
+                    keyword: Some("fc2".to_owned()),
+                    ..MetadataFilter::default()
+                },
+                &["FC2-1234567"],
+            ),
+            (
+                "通配符按字面",
+                MetadataFilter {
+                    keyword: Some("100%".to_owned()),
+                    ..MetadataFilter::default()
+                },
+                &["XYZ-100"],
+            ),
+            (
+                "空白关键字不过滤",
+                MetadataFilter {
+                    keyword: Some("   ".to_owned()),
+                    ..MetadataFilter::default()
+                },
+                &["ABC-001", "FC2-1234567", "XYZ-100"],
+            ),
+            (
+                "三个条件取交集",
+                MetadataFilter {
+                    content_type: Some(ContentType::Censored),
+                    source: Some("javdb".to_owned()),
+                    keyword: Some("ABC".to_owned()),
+                },
+                &["ABC-001"],
+            ),
+            (
+                "没有命中",
+                MetadataFilter {
+                    keyword: Some("不存在的词".to_owned()),
+                    ..MetadataFilter::default()
+                },
+                &[],
+            ),
+        ];
+
+        for (name, filter, expected) in cases {
+            let rows = repository.list(filter, 10, 0).await.expect("应列出成功");
+            let mut actual: Vec<&str> = rows.iter().map(|row| row.number.as_str()).collect();
+            let mut expected = expected.to_vec();
+            actual.sort_unstable();
+            expected.sort_unstable();
+
+            assert_eq!(actual, expected, "用例: {name}");
+            let total = repository.count(filter).await.expect("应统计成功");
+            assert_eq!(
+                usize::try_from(total).unwrap_or_default(),
+                expected.len(),
+                "总数应与列表同源: {name}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn offset_past_end_yields_no_rows() {
+        let (_dir, repository) = seeded().await;
+
+        let rows = repository
+            .list(&MetadataFilter::default(), 10, 99)
+            .await
+            .expect("应列出成功");
+        let total = repository
+            .count(&MetadataFilter::default())
+            .await
+            .expect("应统计成功");
+
+        assert!(rows.is_empty(), "越界偏移应返回空页");
+        assert_eq!(total, 3, "总数不受偏移影响");
+    }
+
+    #[tokio::test]
+    async fn filters_combine_as_intersection() {
+        let (_dir, repository) = seeded().await;
+
+        let rows = repository
+            .list(
+                &MetadataFilter {
+                    content_type: Some(ContentType::Censored),
+                    source: Some("javdb".to_owned()),
+                    keyword: Some("ABC".to_owned()),
+                },
+                10,
+                0,
+            )
+            .await
+            .expect("应列出成功");
+
+        assert_eq!(rows.len(), 1, "三个条件应同时生效");
+        assert_eq!(rows[0].number, "ABC-001");
+    }
+
     #[tokio::test]
     async fn list_is_ordered_by_update_time() {
         let (_dir, repository) = repository().await;
@@ -389,7 +635,10 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
 
-        let rows = repository.list(10, 0).await.expect("应列出成功");
+        let rows = repository
+            .list(&MetadataFilter::default(), 10, 0)
+            .await
+            .expect("应列出成功");
         let numbers: Vec<&str> = rows.iter().map(|row| row.number.as_str()).collect();
 
         assert_eq!(numbers, ["ABC-003", "ABC-002", "ABC-001"]);

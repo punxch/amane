@@ -32,6 +32,8 @@ pub struct Runtime {
     pub metadata: MetadataRepository,
     pub tasks: Arc<TaskService>,
     pub resources: Arc<ResourceStore>,
+    /// 来源登记表. 处理函数用它抓取, 筛选端点用它给出可选项.
+    pub sources: Arc<Registry>,
 }
 
 impl Runtime {
@@ -84,6 +86,7 @@ impl Runtime {
             metadata,
             tasks,
             resources,
+            sources,
         })
     }
 }
