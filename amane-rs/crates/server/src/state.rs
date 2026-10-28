@@ -36,6 +36,8 @@ pub struct Runtime {
     pub metadata: MetadataRepository,
     pub tasks: Arc<TaskService>,
     pub resources: Arc<ResourceStore>,
+    /// 删除条目的入口: 库内事务与文件清理都在它后面.
+    pub removal: amane_core::MetadataRemoval,
     /// 来源登记表. 处理函数用它获取, 筛选端点用它给出可选项.
     pub sources: Arc<Registry>,
     /// 定时任务登记与调度器. 循环由进程入口启动.
@@ -109,6 +111,10 @@ impl Runtime {
         );
         let schedules = ScheduleRepository::new(database.clone());
         let scheduler = Arc::new(Scheduler::new(schedules.clone(), Arc::clone(&tasks)));
+        let removal = amane_core::MetadataRemoval::new(
+            metadata.clone(),
+            Arc::clone(&resources) as Arc<dyn amane_core::ResourceFiles>,
+        );
 
         Ok(Self {
             settings,
@@ -116,6 +122,7 @@ impl Runtime {
             metadata,
             tasks,
             resources,
+            removal,
             sources,
             schedules,
             scheduler,

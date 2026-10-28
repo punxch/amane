@@ -234,8 +234,7 @@ pub async fn update_metadata(
 
 /// 删除条目.
 ///
-/// 关联数据随主行级联删除; 不再被引用的资源文件在事务提交后清理. 顺序反过来会让条目
-/// 指向不存在的文件, 这个顺序最坏只留下一个无主文件.
+/// 关联数据与资源文件都由 [`amane_core::MetadataRemoval`] 处理; 这里只映射状态码.
 #[utoipa::path(
     delete,
     path = "/api/metadata/{number}",
@@ -253,13 +252,7 @@ pub async fn delete_metadata(
     Path(number): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     let number = MediaNumber::parse(&number)?;
-    let outcome = state.runtime.metadata.delete(&number).await?;
-
-    for resource in &outcome.resources {
-        if let Err(error) = state.runtime.resources.remove_file(resource).await {
-            tracing::warn!(resource = %resource.file_name, %error, "删除资源文件失败");
-        }
-    }
+    state.runtime.removal.delete(&number).await?;
 
     Ok(StatusCode::NO_CONTENT)
 }

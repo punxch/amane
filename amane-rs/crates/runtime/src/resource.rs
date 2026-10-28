@@ -4,7 +4,7 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use amane_core::{Resource, ResourceError, ResourceRepository};
+use amane_core::{Resource, ResourceError, ResourceFiles, ResourceRepository};
 use amane_net::WebClient;
 use thiserror::Error;
 
@@ -16,6 +16,14 @@ pub enum StoreError {
     Download { url: String, message: String },
     #[error("读写资源文件失败: {0}")]
     Io(#[from] io::Error),
+}
+
+/// 内核的清理口由资源库实现: 它知道文件放在哪.
+#[async_trait::async_trait]
+impl ResourceFiles for ResourceStore {
+    async fn remove(&self, resource: &Resource) -> io::Result<()> {
+        self.remove_file(resource).await
+    }
 }
 
 /// 把远端资源取到本地并按地址去重.

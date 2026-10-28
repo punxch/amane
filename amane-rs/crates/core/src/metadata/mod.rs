@@ -1,5 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+mod removal;
+
+pub use removal::{MetadataRemoval, ResourceFiles};
+
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::types::Json;
@@ -302,13 +306,6 @@ fn merge_sources(
     let mut merged = existing.cloned().unwrap_or_default();
     merged.merge(updates, locked);
     merged
-}
-
-/// 删除条目的结果: 需要调用方清理的文件.
-#[derive(Debug, Clone, Default)]
-pub struct DeleteOutcome {
-    /// 删除后不再被任何条目引用的资源; 文件由调用方删除.
-    pub resources: Vec<Resource>,
 }
 
 /// 写入或更新一行, 调用方负责事务边界.
@@ -875,11 +872,11 @@ impl MetadataRepository {
         Ok(rows.into_iter().map(|(value,)| value).collect())
     }
 
-    /// 删除条目与全部关联数据.
+    /// 删除条目与全部关联数据, 返回不再被引用的资源.
     ///
-    /// 只处理数据库: 资源文件由调用方在事务提交后删除. 反过来的顺序会让条目指向不存在的文件,
-    /// 而这个顺序最坏只留下一个无主文件.
-    pub async fn delete(&self, number: &MediaNumber) -> Result<DeleteOutcome, RepositoryError> {
+    /// 只处理数据库: 外部请用 [`MetadataRemoval`], 它按「数据库先行、文件随后」的顺序
+    /// 把文件也清掉.
+    pub async fn delete(&self, number: &MediaNumber) -> Result<Vec<Resource>, RepositoryError> {
         let mut transaction = self.database.write().begin().await?;
 
         let existing: Option<(i64, Option<i64>, Option<i64>)> = sqlx::query_as(
@@ -931,7 +928,7 @@ impl MetadataRepository {
 
         transaction.commit().await?;
 
-        Ok(DeleteOutcome { resources })
+        Ok(resources)
     }
 
     /// 番号条目的各来源快照, 按来源标识排序.
@@ -1089,9 +1086,9 @@ mod tests {
             .await
             .expect("应写入快照");
 
-        let outcome = repository.delete(&number).await.expect("应删除成功");
+        let orphans = repository.delete(&number).await.expect("应删除成功");
 
-        assert!(outcome.resources.is_empty(), "没有关联资源");
+        assert!(orphans.is_empty(), "没有关联资源");
         assert!(
             repository
                 .find(&number)
@@ -1126,9 +1123,9 @@ mod tests {
             .await
             .expect("应写入成功");
 
-        let outcome = repository.delete(&number).await.expect("应删除成功");
+        let orphans = repository.delete(&number).await.expect("应删除成功");
 
-        assert!(outcome.resources.is_empty());
+        assert!(orphans.is_empty());
         assert!(
             repository
                 .find(&number)
@@ -1156,9 +1153,9 @@ mod tests {
             .await
             .expect("应关联成功");
 
-        let outcome = repository.delete(&number).await.expect("应删除成功");
+        let orphans = repository.delete(&number).await.expect("应删除成功");
 
-        assert_eq!(outcome.resources.len(), 1, "无主资源应交给调用方清理");
+        assert_eq!(orphans.len(), 1, "无主资源应交给调用方清理");
         assert!(
             resources
                 .find(resource.id)
@@ -1190,12 +1187,9 @@ mod tests {
         }
 
         let number = MediaNumber::parse("ABC-004").expect("应解析成功");
-        let outcome = repository.delete(&number).await.expect("应删除成功");
+        let orphans = repository.delete(&number).await.expect("应删除成功");
 
-        assert!(
-            outcome.resources.is_empty(),
-            "另一个条目还在引用, 资源不能删"
-        );
+        assert!(orphans.is_empty(), "另一个条目还在引用, 资源不能删");
         assert!(
             resources
                 .find(shared.id)
@@ -1223,9 +1217,9 @@ mod tests {
             .await
             .expect("应关联成功");
 
-        let outcome = repository.delete(&number).await.expect("应删除成功");
+        let orphans = repository.delete(&number).await.expect("应删除成功");
 
-        assert_eq!(outcome.resources.len(), 1, "封面资源也应交给调用方清理");
+        assert_eq!(orphans.len(), 1, "封面资源也应交给调用方清理");
         assert!(
             resources
                 .find(cover.id)
