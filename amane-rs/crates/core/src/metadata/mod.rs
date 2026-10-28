@@ -32,7 +32,7 @@ impl MetadataFilter {
     /// 校验取值域有界的筛选值: 来源必须在已知集合里.
     ///
     /// 分类是开放取值, 不在此列 —— 写错一个字得到空列表, 而不是让整个筛选报错.
-    pub fn validate(&self, known_sources: &[&str]) -> Result<(), RepositoryError> {
+    pub fn validate(&self, known_sources: &[&str]) -> Result<(), FilterError> {
         let Some(source) = self.source.as_deref() else {
             return Ok(());
         };
@@ -40,7 +40,7 @@ impl MetadataFilter {
             return Ok(());
         }
 
-        Err(RepositoryError::InvalidInput(format!("未知来源: {source}")))
+        Err(FilterError::UnknownSource(source.to_owned()))
     }
 
     /// 关键字转成 LIKE 模式. `%` 与 `_` 是通配符, 出现在关键字里必须转义,
@@ -475,6 +475,13 @@ fn push_conditions(builder: &mut QueryBuilder<'_, Sqlite>, filter: &MetadataFilt
             .push_bind(pattern)
             .push(" ESCAPE '\\')");
     }
+}
+
+/// 筛选条件不合法的原因. 与仓储错误分开: 它不是持久化失败, 也不需要日志.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum FilterError {
+    #[error("未知来源: {0}")]
+    UnknownSource(String),
 }
 
 #[derive(Debug, Error)]
@@ -1061,8 +1068,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        MANUAL_SOURCE, Metadata, MetadataFilter, MetadataInput, MetadataPatch, MetadataRepository,
-        RepositoryError, ScrapeWrite, ScrapedMetadata, SourceSnapshotInput,
+        FilterError, MANUAL_SOURCE, Metadata, MetadataFilter, MetadataInput, MetadataPatch,
+        MetadataRepository, RepositoryError, ScrapeWrite, ScrapedMetadata, SourceSnapshotInput,
     };
     use crate::content_type::ContentType;
     use crate::db::Database;
@@ -1359,6 +1366,27 @@ mod tests {
                 "{field} 的来源应记为人工"
             );
         }
+    }
+
+    #[test]
+    fn filter_rejects_unknown_source() {
+        let filter = MetadataFilter {
+            source: Some("nowhere".to_owned()),
+            ..MetadataFilter::default()
+        };
+
+        assert_eq!(
+            filter.validate(&["dmm", "javdb"]),
+            Err(FilterError::UnknownSource("nowhere".to_owned()))
+        );
+        assert!(
+            filter.validate(&["dmm", "nowhere"]).is_ok(),
+            "已知来源应通过"
+        );
+        assert!(
+            MetadataFilter::default().validate(&[]).is_ok(),
+            "未指定来源时不校验"
+        );
     }
 
     #[tokio::test]
