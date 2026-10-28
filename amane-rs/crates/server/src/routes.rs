@@ -1,12 +1,11 @@
 use amane_core::TaskLogger;
-use amane_core::config::Settings;
 use amane_core::{
     LockableField, MediaNumber, MetadataFilter, MetadataInput, SchedulePatch, ScheduleSpec,
     TaskFilter, TaskKind, TaskServiceError, TaskSpec, TaskStatus,
 };
 use axum::Json;
 use axum::Router;
-use axum::extract::rejection::{JsonRejection, QueryRejection};
+use axum::extract::rejection::QueryRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
@@ -20,14 +19,26 @@ use crate::dto::{
     LibraryFileQuery, LibraryPage, ListQuery, LockRequest, MetadataDto, MetadataPage,
     OrganizeExecuteRequest, OrganizePreviewDto, PreviewItemDto, RestoreRequest, ScheduleDto,
     SchedulePage, SettingsDto, SourceOption, TagRequest, TaskDto, TaskListQuery, TaskLogEntry,
-    TaskLogPage, TaskPage, TrashItemDto, TrashPageDto, UpdateMetadataRequest,
+    TaskLogPage, TaskPage, TrashItemDto, TrashPageDto, UpdateConfigRequest, UpdateMetadataRequest,
     UpdateScheduleRequest,
 };
-use crate::error::{ApiError, ErrorBody};
+use crate::error::{ApiError, ApiJson, ErrorBody};
 use crate::state::AppState;
 
 const DEFAULT_LIMIT: u32 = 50;
 const MAX_LIMIT: u32 = 200;
+
+/// 取媒体库登记; 不存在时给出统一的 404 说明.
+async fn require_library(state: &AppState, id: i64) -> Result<amane_core::LibraryRoot, ApiError> {
+    state
+        .runtime
+        .libraries
+        .find(id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound {
+            what: format!("媒体库 {id} 不存在"),
+        })
+}
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -130,7 +141,7 @@ pub async fn list_metadata(
 )]
 pub async fn create_metadata(
     State(state): State<AppState>,
-    Json(payload): Json<CreateMetadataRequest>,
+    ApiJson(payload): ApiJson<CreateMetadataRequest>,
 ) -> Result<(StatusCode, Json<MetadataDto>), ApiError> {
     let number = MediaNumber::parse(&payload.number)?;
     let input = MetadataInput {
@@ -191,7 +202,7 @@ async fn load_detail(state: &AppState, number: &MediaNumber) -> Result<MetadataD
 pub async fn update_metadata(
     State(state): State<AppState>,
     Path(number): Path<String>,
-    Json(payload): Json<UpdateMetadataRequest>,
+    ApiJson(payload): ApiJson<UpdateMetadataRequest>,
 ) -> Result<Json<MetadataDto>, ApiError> {
     let number = MediaNumber::parse(&number)?;
     if payload.is_empty() {
@@ -230,7 +241,7 @@ pub async fn update_metadata(
 pub async fn set_lock(
     State(state): State<AppState>,
     Path((number, field)): Path<(String, String)>,
-    Json(payload): Json<LockRequest>,
+    ApiJson(payload): ApiJson<LockRequest>,
 ) -> Result<Json<MetadataDto>, ApiError> {
     let number = MediaNumber::parse(&number)?;
     let field = LockableField::parse(&field).ok_or_else(|| ApiError::Invalid {
@@ -272,7 +283,7 @@ pub async fn set_lock(
 pub async fn add_tag(
     State(state): State<AppState>,
     Path(number): Path<String>,
-    Json(payload): Json<TagRequest>,
+    ApiJson(payload): ApiJson<TagRequest>,
 ) -> Result<Json<MetadataDto>, ApiError> {
     let number = MediaNumber::parse(&number)?;
     let row = state
@@ -392,7 +403,7 @@ pub async fn read_config(State(state): State<AppState>) -> Result<Json<SettingsD
     put,
     path = "/api/config",
     tag = "config",
-    request_body = serde_json::Value,
+    request_body = UpdateConfigRequest,
     responses(
         (status = 200, body = ConfigState),
         (status = 400, body = crate::error::ErrorBody),
@@ -401,13 +412,9 @@ pub async fn read_config(State(state): State<AppState>) -> Result<Json<SettingsD
 )]
 pub async fn update_config(
     State(state): State<AppState>,
-    body: Result<Json<amane_core::config::Settings>, JsonRejection>,
+    ApiJson(request): ApiJson<UpdateConfigRequest>,
 ) -> Result<Json<ConfigState>, ApiError> {
-    // 拒绝同样返回统一错误体: 框架默认的纯文本 400 让界面拿不到字段名.
-    let Json(incoming) = body.map_err(|error| ApiError::Invalid {
-        code: "invalid_config",
-        message: format!("配置不合法: {error}"),
-    })?;
+    let incoming = request.into_settings();
 
     // 先校验后生效: 越界取值不会替换旧的合法配置.
     let restart_required = state.runtime.cold_diff(&incoming);
@@ -439,7 +446,10 @@ pub async fn update_config(
         (status = 401, body = crate::error::ErrorBody)
     ))]
 pub async fn config_schema() -> Json<serde_json::Value> {
-    Json(serde_json::to_value(schemars::schema_for!(Settings)).expect("配置 schema 可序列化"))
+    Json(
+        serde_json::to_value(schemars::schema_for!(amane_core::config::Settings))
+            .expect("配置 schema 可序列化"),
+    )
 }
 
 #[utoipa::path(
@@ -493,7 +503,7 @@ pub async fn list_tasks(
 )]
 pub async fn create_task(
     State(state): State<AppState>,
-    Json(payload): Json<CreateTaskRequest>,
+    ApiJson(payload): ApiJson<CreateTaskRequest>,
 ) -> Result<(StatusCode, Json<TaskDto>), ApiError> {
     let kind = TaskKind::parse(&payload.kind).ok_or_else(|| ApiError::Invalid {
         code: "invalid_task_kind",
@@ -839,7 +849,7 @@ pub async fn list_schedules(State(state): State<AppState>) -> Result<Json<Schedu
 )]
 pub async fn create_schedule(
     State(state): State<AppState>,
-    Json(payload): Json<CreateScheduleRequest>,
+    ApiJson(payload): ApiJson<CreateScheduleRequest>,
 ) -> Result<(StatusCode, Json<ScheduleDto>), ApiError> {
     let kind = TaskKind::parse(&payload.kind).ok_or_else(|| ApiError::Invalid {
         code: "invalid_task_kind",
@@ -874,7 +884,7 @@ pub async fn create_schedule(
 pub async fn update_schedule(
     State(state): State<AppState>,
     Path(id): Path<i64>,
-    Json(payload): Json<UpdateScheduleRequest>,
+    ApiJson(payload): ApiJson<UpdateScheduleRequest>,
 ) -> Result<Json<ScheduleDto>, ApiError> {
     if payload.enabled.is_none() {
         return Err(ApiError::Invalid {
@@ -992,7 +1002,7 @@ fn validate_root_path(raw: &str) -> Result<std::path::PathBuf, ApiError> {
 )]
 pub async fn create_library(
     State(state): State<AppState>,
-    Json(payload): Json<CreateLibraryRequest>,
+    ApiJson(payload): ApiJson<CreateLibraryRequest>,
 ) -> Result<(StatusCode, Json<LibraryDto>), ApiError> {
     let path = validate_root_path(&payload.path)?;
     let root = state.runtime.libraries.create(&path).await?;
@@ -1045,11 +1055,7 @@ pub async fn scan_library(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<(StatusCode, Json<TaskDto>), ApiError> {
-    if state.runtime.libraries.find(id).await?.is_none() {
-        return Err(ApiError::NotFound {
-            what: format!("媒体库 {id} 不存在"),
-        });
-    }
+    require_library(&state, id).await?;
 
     let task = state
         .runtime
@@ -1085,11 +1091,7 @@ pub async fn list_library_files(
     Path(id): Path<i64>,
     query: Result<Query<LibraryFileQuery>, QueryRejection>,
 ) -> Result<Json<LibraryFilePage>, ApiError> {
-    if state.runtime.libraries.find(id).await?.is_none() {
-        return Err(ApiError::NotFound {
-            what: format!("媒体库 {id} 不存在"),
-        });
-    }
+    require_library(&state, id).await?;
     let Query(query) = parse_query(query)?;
     let kind = match query.kind.as_deref() {
         None | Some("") => None,
@@ -1142,24 +1144,17 @@ pub async fn organize_preview(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<Json<OrganizePreviewDto>, ApiError> {
-    let root = state
-        .runtime
-        .libraries
-        .find(id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound {
-            what: format!("媒体库 {id} 不存在"),
-        })?;
+    let root = require_library(&state, id).await?;
 
     let settings = state.runtime.settings();
     let template = amane_core::Template::parse(&settings.hot.organize.video_template)
         .map_err(|error| ApiError::Internal(format!("路径模板无法解析: {error}")))?;
 
-    // 扫描索引里的媒体文件是预览的全部对象; 上限与扫描分页一致, 超出部分后续切片再分批.
-    let (_, media) = state
+    // 扫描索引里的媒体文件是预览的全部对象: 按页取会让超出页大小的文件既不预览也不提示.
+    let media = state
         .runtime
         .libraries
-        .files(id, Some(amane_core::ScanKind::Media), MAX_LIMIT, 0)
+        .all_files(id, Some(amane_core::ScanKind::Media))
         .await?;
 
     // 逐文件提取番号; 提取不出的计入 unmatched, 不进入预览.
@@ -1173,13 +1168,17 @@ pub async fn organize_preview(
     }
 
     // 条目查询并行发出: 读池多连接, 一次配齐全部条目.
+    // 查询失败必须上抛: 当成「条目缺席」会把预览渲染成另一副样子, 界面上看不出区别.
     let metadata = &state.runtime.metadata;
     let entries: Vec<Option<amane_core::Metadata>> = futures::future::join_all(
         numbers
             .iter()
-            .map(|(_, number)| async move { metadata.find(number).await.ok().flatten() }),
+            .map(|(_, number)| async move { metadata.find(number).await }),
     )
-    .await;
+    .await
+    .into_iter()
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(|error| ApiError::Internal(format!("查询番号条目失败: {error}")))?;
 
     let mut preview_requests: Vec<amane_core::PreviewRequest> = Vec::with_capacity(numbers.len());
     for ((index, number), entry) in numbers.iter().zip(&entries) {
@@ -1235,7 +1234,7 @@ pub async fn organize_preview(
 pub async fn organize_execute(
     State(state): State<AppState>,
     Path(id): Path<i64>,
-    Json(payload): Json<OrganizeExecuteRequest>,
+    ApiJson(payload): ApiJson<OrganizeExecuteRequest>,
 ) -> Result<(StatusCode, Json<TaskDto>), ApiError> {
     // 处置取值在提交时校验, 拼错的动词不进队列.
     for action in payload.choices.values() {
@@ -1247,11 +1246,7 @@ pub async fn organize_execute(
         }
     }
 
-    if state.runtime.libraries.find(id).await?.is_none() {
-        return Err(ApiError::NotFound {
-            what: format!("媒体库 {id} 不存在"),
-        });
-    }
+    require_library(&state, id).await?;
 
     let task = state
         .runtime
@@ -1285,19 +1280,9 @@ pub async fn cleanup_manifest(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<Json<CleanupManifestDto>, ApiError> {
-    let root = state
-        .runtime
-        .libraries
-        .find(id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound {
-            what: format!("媒体库 {id} 不存在"),
-        })?;
-    let (_, index) = state
-        .runtime
-        .libraries
-        .files(id, None, MAX_LIMIT, 0)
-        .await?;
+    let root = require_library(&state, id).await?;
+    // 清单必须是全量: 按页取会让超出页大小的文件既不列出也不清理.
+    let index = state.runtime.libraries.all_files(id, None).await?;
     let items = amane_core::build_cleanup_manifest(&index, &root.path_buf());
     let total_size = items.iter().map(|item| item.size).sum();
 
@@ -1330,11 +1315,7 @@ pub async fn cleanup_execute(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<(StatusCode, Json<TaskDto>), ApiError> {
-    if state.runtime.libraries.find(id).await?.is_none() {
-        return Err(ApiError::NotFound {
-            what: format!("媒体库 {id} 不存在"),
-        });
-    }
+    require_library(&state, id).await?;
 
     let task = state
         .runtime
@@ -1365,14 +1346,7 @@ pub async fn trash_listing(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<Json<TrashPageDto>, ApiError> {
-    let root = state
-        .runtime
-        .libraries
-        .find(id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound {
-            what: format!("媒体库 {id} 不存在"),
-        })?;
+    let root = require_library(&state, id).await?;
 
     // 遍历是纯阻塞 IO, 交给阻塞线程池.
     let root_path = root.path_buf();
@@ -1411,16 +1385,9 @@ pub async fn trash_listing(
 pub async fn trash_restore(
     State(state): State<AppState>,
     Path(id): Path<i64>,
-    Json(payload): Json<RestoreRequest>,
+    ApiJson(payload): ApiJson<RestoreRequest>,
 ) -> Result<Json<TrashPageDto>, ApiError> {
-    let root = state
-        .runtime
-        .libraries
-        .find(id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound {
-            what: format!("媒体库 {id} 不存在"),
-        })?;
+    let root = require_library(&state, id).await?;
 
     // 路径遍历防御: 相对路径不得逃出回收目录映射.
     if payload.path.contains("..") {

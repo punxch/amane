@@ -65,14 +65,10 @@ impl TaskHandler for OrganizeHandler {
         let template = amane_core::Template::parse(&settings.hot.organize.video_template)
             .map_err(|error| TaskError::Failed(format!("路径模板无法解析: {error}")))?;
 
-        let (_, media) = self
+        // 与预览取同一份完整集合: 按页取会让超出页大小的文件既不整理也不提示.
+        let media = self
             .libraries
-            .files(
-                payload.library_id,
-                Some(amane_core::ScanKind::Media),
-                200,
-                0,
-            )
+            .all_files(payload.library_id, Some(amane_core::ScanKind::Media))
             .await
             .map_err(|error| TaskError::Failed(format!("读取扫描索引失败: {error}")))?;
 
@@ -89,9 +85,12 @@ impl TaskHandler for OrganizeHandler {
         let entries: Vec<Option<amane_core::Metadata>> = futures::future::join_all(
             numbers
                 .iter()
-                .map(|(_, number)| async move { metadata.find(number).await.ok().flatten() }),
+                .map(|(_, number)| async move { metadata.find(number).await }),
         )
-        .await;
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| TaskError::Failed(format!("查询番号条目失败: {error}")))?;
 
         let mut preview_requests: Vec<amane_core::PreviewRequest> =
             Vec::with_capacity(numbers.len());
@@ -149,6 +148,10 @@ impl TaskHandler for OrganizeHandler {
             .await;
 
         // 移动是纯阻塞 IO, 交给阻塞线程池.
+        // 批量移动一旦开始就不再中断: 半个库搬完比不搬更难收拾, 因此取消只在边界生效.
+        if context.cancel.is_cancelled() {
+            return Err(TaskError::Cancelled);
+        }
         let root_path = root.path_buf();
         let subtitle_extensions: Vec<String> = settings.hot.organize.subtitle_extensions.clone();
         let create_strm = settings.hot.organize.create_strm;

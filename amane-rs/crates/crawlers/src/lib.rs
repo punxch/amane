@@ -141,6 +141,16 @@ impl Registry {
         ])
     }
 
+    /// 全部已登记的来源标识, 与当前启用集无关.
+    ///
+    /// 配置校验取这里而不是 [`Registry::active`]: 停用一个来源后仍要允许把它重新启用.
+    pub fn known_ids(&self) -> Vec<&'static str> {
+        self.all
+            .iter()
+            .map(|source| source.descriptor().id)
+            .collect()
+    }
+
     /// 当前参与聚合的来源.
     pub fn active(&self) -> Vec<Arc<dyn Source>> {
         self.active

@@ -40,9 +40,9 @@ impl TaskHandler for CleanupHandler {
             .ok_or_else(|| TaskError::Failed(format!("媒体库 {} 不存在", payload.library_id)))?;
 
         // 清单在执行时重建: 与界面上看到的来自同一张扫描索引, 不会删掉刚登记的内容.
-        let (_, index) = self
+        let index = self
             .libraries
-            .files(payload.library_id, None, 200, 0)
+            .all_files(payload.library_id, None)
             .await
             .map_err(|error| TaskError::Failed(format!("读取扫描索引失败: {error}")))?;
         let manifest = amane_core::build_cleanup_manifest(&index, &root.path_buf());
@@ -62,6 +62,10 @@ impl TaskHandler for CleanupHandler {
         }
 
         // 移动是纯阻塞 IO, 交给阻塞线程池.
+        // 批量移动一旦开始就不再中断: 半个库搬完比不搬更难收拾, 因此取消只在边界生效.
+        if context.cancel.is_cancelled() {
+            return Err(TaskError::Cancelled);
+        }
         let root_path = root.path_buf();
         let items = manifest.clone();
         let (moved, failures) =

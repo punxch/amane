@@ -156,12 +156,8 @@ impl Runtime {
     pub async fn apply_hot(&self, incoming: &Settings) -> Result<Vec<String>, ConfigError> {
         // 并发的保存请求串行应用: 比较与生效都基于同一次取得的快照.
         let _guard = self.apply_lock.lock().await;
-        let known: Vec<&str> = self
-            .sources
-            .active()
-            .iter()
-            .map(|source| source.descriptor().id)
-            .collect();
+        // 白名单取全部登记来源: 取启用集的话, 停用后再启用会被判成未知来源.
+        let known = self.sources.known_ids();
         incoming.hot.validate(&known)?;
 
         let mut applied = Vec::new();

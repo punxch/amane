@@ -391,20 +391,32 @@ pub struct UpdateScheduleRequest {
 }
 
 /// 当前配置的传输形态. 与 `Settings` 分开, 令牌只在被显式设置时才出现.
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct SettingsDto {
     pub cold: ColdSettingsDto,
     pub hot: HotSettingsDto,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
+/// 保存配置的请求体.
+///
+/// 与 `Settings` 分开: 领域类型不参与传输, 数据目录在这里以字符串出现.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateConfigRequest {
+    pub cold: ColdSettingsDto,
+    pub hot: HotSettingsDto,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ColdSettingsDto {
     pub data_dir: String,
     pub bind: String,
     pub api_token: Option<String>,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct HotSettingsDto {
     pub concurrency: u32,
     pub request_timeout_secs: u32,
@@ -413,16 +425,22 @@ pub struct HotSettingsDto {
     pub organize: OrganizeSettingsDto,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ScanSettingsDto {
     pub media_extensions: Vec<String>,
     pub min_file_size: u64,
     pub blacklist_patterns: Vec<String>,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct OrganizeSettingsDto {
     pub video_template: String,
+    /// 随视频一起整理的字幕扩展名; 空列表关闭字幕随配.
+    pub subtitle_extensions: Vec<String>,
+    /// 是否为每个视频生成 STRM 指针文件.
+    pub create_strm: bool,
 }
 
 impl SettingsDto {
@@ -444,6 +462,36 @@ impl SettingsDto {
                 },
                 organize: OrganizeSettingsDto {
                     video_template: value.hot.organize.video_template.clone(),
+                    subtitle_extensions: value.hot.organize.subtitle_extensions.clone(),
+                    create_strm: value.hot.organize.create_strm,
+                },
+            },
+        }
+    }
+}
+
+impl UpdateConfigRequest {
+    /// 转为内核配置. 数据目录在这里才从字符串变成路径.
+    pub fn into_settings(self) -> amane_core::config::Settings {
+        amane_core::config::Settings {
+            cold: amane_core::config::ColdSettings {
+                data_dir: std::path::PathBuf::from(self.cold.data_dir),
+                bind: self.cold.bind,
+                api_token: self.cold.api_token,
+            },
+            hot: amane_core::config::HotSettings {
+                concurrency: self.hot.concurrency,
+                request_timeout_secs: self.hot.request_timeout_secs,
+                enabled_sources: self.hot.enabled_sources,
+                scan: amane_core::config::ScanSettings {
+                    media_extensions: self.hot.scan.media_extensions,
+                    min_file_size: self.hot.scan.min_file_size,
+                    blacklist_patterns: self.hot.scan.blacklist_patterns,
+                },
+                organize: amane_core::config::OrganizeSettings {
+                    video_template: self.hot.organize.video_template,
+                    subtitle_extensions: self.hot.organize.subtitle_extensions,
+                    create_strm: self.hot.organize.create_strm,
                 },
             },
         }

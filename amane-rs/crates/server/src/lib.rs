@@ -807,18 +807,73 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn config_rejects_unknown_field_and_out_of_range_value() {
+    async fn re_enabling_a_disabled_source_is_allowed() {
+        let (_dir, app) = app(None).await;
+        let (_, current) = call(app.clone(), Method::GET, "/api/config", None).await;
+
+        let mut disabled = current.clone();
+        disabled["hot"]["enabled_sources"] = serde_json::json!(["dmm"]);
+        let text = serde_json::to_string(&disabled).expect("配置应可序列化");
+        let (status, _) = call(app.clone(), Method::PUT, "/api/config", Some(&text)).await;
+        assert_eq!(status, StatusCode::OK);
+
+        // 白名单必须取全部登记来源: 取启用集的话, 这里会被判成未知来源.
+        let mut restored = current.clone();
+        restored["hot"]["enabled_sources"] = serde_json::json!(["javdb", "dmm"]);
+        let text = serde_json::to_string(&restored).expect("配置应可序列化");
+        let (status, body) = call(app.clone(), Method::PUT, "/api/config", Some(&text)).await;
+        assert_eq!(status, StatusCode::OK, "停用后应能重新启用, 实际 {body}");
+
+        let (_, options) = call(app.clone(), Method::GET, "/api/filters", None).await;
+        let ids: Vec<&str> = options["sources"]
+            .as_array()
+            .expect("来源应为数组")
+            .iter()
+            .filter_map(|item| item["id"].as_str())
+            .collect();
+        assert_eq!(ids, ["javdb", "dmm"], "顺序即聚合优先级");
+    }
+
+    #[tokio::test]
+    async fn malformed_body_returns_unified_error() {
         let (_dir, app) = app(None).await;
 
         let (status, body) = call(
             app.clone(),
-            Method::PUT,
-            "/api/config",
-            Some(r#"{"hot":{"concurrency":4,"typo":1}}"#),
+            Method::POST,
+            "/api/tasks",
+            Some(r#"{"kind":"scrape""#),
         )
         .await;
+
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(body["code"], "invalid_config");
+        assert_eq!(
+            body["code"], "invalid_body",
+            "请求体解析失败也要走统一错误体, 实际 {body}"
+        );
+        assert!(
+            body["message"]
+                .as_str()
+                .is_some_and(|text| !text.is_empty()),
+            "错误说明不能为空"
+        );
+    }
+
+    #[tokio::test]
+    async fn config_rejects_malformed_body_with_unified_error() {
+        let (_dir, app) = app(None).await;
+        let (_, current) = call(app.clone(), Method::GET, "/api/config", None).await;
+
+        // 未知字段: 解析阶段就拒绝, 错误说明指出字段名.
+        let mut unknown_field = current.clone();
+        unknown_field["hot"]["typo"] = serde_json::json!(1);
+        let text = serde_json::to_string(&unknown_field).expect("配置应可序列化");
+        let (status, body) = call(app.clone(), Method::PUT, "/api/config", Some(&text)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body["code"], "invalid_body",
+            "请求体解析失败也要走统一错误体"
+        );
         assert!(
             body["message"]
                 .as_str()
@@ -828,13 +883,36 @@ mod tests {
             body["message"]
         );
 
+        // 缺字段: 同样拒绝, 而不是用默认值把未提交的配置覆盖掉.
         let (status, body) = call(
             app.clone(),
             Method::PUT,
             "/api/config",
-            Some(r#"{"hot":{"concurrency":99}}"#),
+            Some(r#"{"cold":{"data_dir":"/tmp","bind":"127.0.0.1:0","api_token":null},"hot":{"concurrency":4,"request_timeout_secs":20,"enabled_sources":[]}}"#),
         )
         .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["code"], "invalid_body");
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("scan"),
+            "缺字段时说明应指出缺的是哪一项, 实际 {}",
+            body["message"]
+        );
+    }
+
+    #[tokio::test]
+    async fn config_rejects_out_of_range_value_and_unknown_source() {
+        let (_dir, app) = app(None).await;
+
+        let (_, current) = call(app.clone(), Method::GET, "/api/config", None).await;
+
+        let mut out_of_range = current.clone();
+        out_of_range["hot"]["concurrency"] = serde_json::json!(99);
+        let text = serde_json::to_string(&out_of_range).expect("配置应可序列化");
+        let (status, body) = call(app.clone(), Method::PUT, "/api/config", Some(&text)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body["code"], "invalid_config");
         assert!(
@@ -845,13 +923,10 @@ mod tests {
             "错误说明应指出越界字段名"
         );
 
-        let (status, body) = call(
-            app.clone(),
-            Method::PUT,
-            "/api/config",
-            Some(r#"{"hot":{"enabled_sources":["nowhere"]}}"#),
-        )
-        .await;
+        let mut unknown_source = current.clone();
+        unknown_source["hot"]["enabled_sources"] = serde_json::json!(["nowhere"]);
+        let text = serde_json::to_string(&unknown_source).expect("配置应可序列化");
+        let (status, body) = call(app.clone(), Method::PUT, "/api/config", Some(&text)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(
             body["message"]

@@ -256,6 +256,40 @@ impl LibraryRepository {
         Ok((total, rows))
     }
 
+    /// 索引里的全部文件, 不设上限.
+    ///
+    /// 整理预览与清理清单需要完整集合: 按页取会让超出页大小的文件既不整理也不清理,
+    /// 而界面上看不出被截断.
+    pub async fn all_files(
+        &self,
+        root_id: i64,
+        kind: Option<ScanKind>,
+    ) -> Result<Vec<LibraryFile>, LibraryError> {
+        let rows: Vec<LibraryFile> = match kind {
+            Some(kind) => {
+                sqlx::query_as(
+                    "SELECT path, kind, rule, detail FROM library_file \
+                     WHERE root_id = ?1 AND kind = ?2 ORDER BY path ASC",
+                )
+                .bind(root_id)
+                .bind(kind)
+                .fetch_all(self.database.read())
+                .await?
+            }
+            None => {
+                sqlx::query_as(
+                    "SELECT path, kind, rule, detail FROM library_file \
+                     WHERE root_id = ?1 ORDER BY path ASC",
+                )
+                .bind(root_id)
+                .fetch_all(self.database.read())
+                .await?
+            }
+        };
+
+        Ok(rows)
+    }
+
     /// 每个类别的条数, 登记列表页据此显示四类统计.
     pub async fn counts(&self, root_id: i64) -> Result<KindCounts, LibraryError> {
         let rows: Vec<(String, i64)> = sqlx::query_as(
@@ -342,6 +376,35 @@ mod tests {
             .expect("应写入成功");
         assert_eq!(second.added, Vec::<String>::new());
         assert_eq!(second.removed, vec!["b.txt".to_owned(), "empty".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn all_files_ignores_page_size() {
+        let (_dir, repository) = repository().await;
+        let root = repository
+            .create(std::path::Path::new("/tmp/amane-library"))
+            .await
+            .expect("应登记成功");
+        let files: Vec<LibraryFile> = (0..260)
+            .map(|index| LibraryFile::new(format!("{index:03}.mp4"), ScanKind::Media))
+            .collect();
+        repository
+            .replace_files(root.id, &files, &[])
+            .await
+            .expect("应写入成功");
+
+        let (total, page) = repository
+            .files(root.id, Some(ScanKind::Media), 200, 0)
+            .await
+            .expect("应查询成功");
+        let all = repository
+            .all_files(root.id, Some(ScanKind::Media))
+            .await
+            .expect("应查询成功");
+
+        assert_eq!(total, 260);
+        assert_eq!(page.len(), 200, "分页查询受上限约束");
+        assert_eq!(all.len(), 260, "全量查询不受分页上限约束");
     }
 
     #[tokio::test]

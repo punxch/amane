@@ -1,9 +1,11 @@
 use amane_core::NumberError;
 use amane_core::RepositoryError;
 use axum::Json;
+use axum::extract::{FromRequest, Request};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use utoipa::ToSchema;
 
 /// 统一的错误响应体.
@@ -56,6 +58,30 @@ impl IntoResponse for ApiError {
             message,
         };
         (status, Json(body)).into_response()
+    }
+}
+
+/// 请求体提取器.
+///
+/// 解析失败时返回统一错误体: 框架默认的纯文本 400 让界面拿不到错误码, 也无法按码分支.
+pub struct ApiJson<T>(pub T);
+
+impl<S, T> FromRequest<S> for ApiJson<T>
+where
+    S: Send + Sync,
+    T: DeserializeOwned,
+{
+    type Rejection = ApiError;
+
+    async fn from_request(request: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let Json(value) = Json::<T>::from_request(request, state)
+            .await
+            .map_err(|rejection| ApiError::Invalid {
+                code: "invalid_body",
+                message: format!("请求体不合法: {rejection}"),
+            })?;
+
+        Ok(Self(value))
     }
 }
 

@@ -63,11 +63,14 @@ impl TaskHandler for ScrapeHandler {
         }
 
         // 并行请求: 单源失败不影响其它来源, 总耗时接近最慢来源.
-        let fetched = futures::future::join_all(candidates.iter().map(|source| async {
-            let id = source.descriptor().id;
-            (id, source.fetch(&number).await)
-        }))
-        .await;
+        // 抓取期间取消要立即生效: 等全部来源返回再检查, 取消会被拖到最后一个超时.
+        let fetched = tokio::select! {
+            results = futures::future::join_all(candidates.iter().map(|source| async {
+                let id = source.descriptor().id;
+                (id, source.fetch(&number).await)
+            })) => results,
+            () = context.cancel.cancelled() => return Err(TaskError::Cancelled),
+        };
 
         let mut hits: Vec<(&str, ScrapedMetadata)> = Vec::new();
         for (id, result) in fetched {
