@@ -55,6 +55,7 @@ pub use state::{AppState, Runtime};
         routes::delete_library,
         routes::scan_library,
         routes::list_library_files,
+        routes::organize_preview,
     ),
     components(schemas(
         dto::MetadataDto,
@@ -88,6 +89,8 @@ pub use state::{AppState, Runtime};
         dto::CreateLibraryRequest,
         dto::LibraryFileDto,
         dto::LibraryFilePage,
+        dto::OrganizePreviewDto,
+        dto::PreviewItemDto,
         error::ErrorBody,
     ))
 )]
@@ -1279,6 +1282,129 @@ mod tests {
         worker.abort();
     }
 
+    /// 整理预览: 只读, 不建目录不移动文件; 三类冲突与 unmatched 计数都要出现.
+    #[tokio::test]
+    async fn organize_preview_is_readonly_and_reports_conflicts() {
+        let (dir, app, state) = app_state(None).await;
+
+        // 默认模板 {maker}/{number}/{number}.{ext}: maker 空则目录段折叠.
+        // 库目录: 一个目标被占 (exists)、一个已就位 (same_path)、一个无番号 (unmatched).
+        let library = dir.path().join("library");
+        std::fs::create_dir_all(library.join("ABC-123")).expect("应创建目录");
+        std::fs::create_dir_all(library.join("XYZ-999")).expect("应创建目录");
+        std::fs::create_dir_all(library.join("downloads")).expect("应创建目录");
+        std::fs::write(library.join("downloads/ABC-123.mp4"), vec![0u8; 64]).expect("应写入源");
+        std::fs::write(library.join("ABC-123/ABC-123.mp4"), vec![0u8; 64]).expect("应写入占用者");
+        std::fs::write(library.join("XYZ-999/XYZ-999.mp4"), vec![0u8; 64]).expect("应写入就位者");
+        std::fs::write(library.join("plain.mp4"), vec![0u8; 64]).expect("应写入无番号文件");
+
+        let payload = serde_json::json!({ "path": library.display().to_string() });
+        let (_, created) = call(
+            app.clone(),
+            Method::POST,
+            "/api/libraries",
+            Some(&serde_json::to_string(&payload).expect("应序列化")),
+        )
+        .await;
+        let id = created["id"].as_i64().expect("应带标识");
+
+        // 预览以扫描索引为输入; 直接登记四个 media 文件, 不跑扫描任务.
+        use amane_core::LibraryFile;
+        state
+            .runtime
+            .libraries
+            .replace_files(
+                id,
+                &[
+                    LibraryFile::new("downloads/ABC-123.mp4", amane_core::ScanKind::Media),
+                    LibraryFile::new("XYZ-999/XYZ-999.mp4", amane_core::ScanKind::Media),
+                    LibraryFile::new("plain.mp4", amane_core::ScanKind::Media),
+                    LibraryFile::new("notes/readme.txt", amane_core::ScanKind::Unrecognized),
+                ],
+                &[],
+            )
+            .await
+            .expect("应写入扫描索引");
+
+        // 两次预览结果必须一致.
+        let (_, first) = call(
+            app.clone(),
+            Method::POST,
+            &format!("/api/libraries/{id}/organize/preview"),
+            None,
+        )
+        .await;
+        let (_, second) = call(
+            app.clone(),
+            Method::POST,
+            &format!("/api/libraries/{id}/organize/preview"),
+            None,
+        )
+        .await;
+        assert_eq!(first, second, "预览必须可重复");
+
+        assert_eq!(first["unmatched"], 1, "无番号文件计入 unmatched");
+        let items = first["items"].as_array().expect("items 应为数组");
+        assert_eq!(items.len(), 2, "只有可配对番号的文件进入预览");
+
+        let abc = items
+            .iter()
+            .find(|item| item["number"] == "ABC-123")
+            .expect("应含 ABC-123");
+        assert_eq!(abc["source_path"], "downloads/ABC-123.mp4");
+        assert_eq!(
+            abc["target_path"], "ABC-123/ABC-123.mp4",
+            "maker 空时目录段整段折叠"
+        );
+        assert_eq!(abc["conflict"], "exists", "目标已有文件应标 exists");
+
+        let xyz = items
+            .iter()
+            .find(|item| item["number"] == "XYZ-999")
+            .expect("应含 XYZ-999");
+        assert_eq!(xyz["conflict"], "same_path", "源与目标相同应标 same_path");
+
+        // number_mismatch: 目标路径被另一个番号的整理记录占用.
+        state
+            .runtime
+            .organize
+            .register(id, "ABC-123/ABC-123.mp4", "XYZ-999", "somewhere.mp4")
+            .await
+            .expect("应登记占用");
+        let (_, third) = call(
+            app.clone(),
+            Method::POST,
+            &format!("/api/libraries/{id}/organize/preview"),
+            None,
+        )
+        .await;
+        let items = third["items"].as_array().expect("items 应为数组");
+        let abc = items
+            .iter()
+            .find(|item| item["number"] == "ABC-123")
+            .expect("应含 ABC-123");
+        assert_eq!(
+            abc["conflict"], "number_mismatch",
+            "登记占用者是别的番号应标 number_mismatch"
+        );
+
+        // 预览前后磁盘状态不变: 目录结构与文件数一致 (downloads、ABC-123、XYZ-999、plain.mp4).
+        let entries: Vec<_> = std::fs::read_dir(&library).expect("应读取库目录").collect();
+        assert_eq!(entries.len(), 4, "预览不得创建目录或移动文件");
+
+        // not_found.
+        let (status, _) = call(
+            app.clone(),
+            Method::POST,
+            "/api/libraries/9999/organize/preview",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        state.runtime.tasks.shutdown();
+    }
+
     #[test]
     fn openapi_lists_every_route() {
         let document = super::openapi();
@@ -1308,6 +1434,7 @@ mod tests {
             "/api/libraries/{id}",
             "/api/libraries/{id}/scan",
             "/api/libraries/{id}/files",
+            "/api/libraries/{id}/organize/preview",
         ] {
             assert!(paths.contains_key(expected), "缺少路径 {expected}");
         }

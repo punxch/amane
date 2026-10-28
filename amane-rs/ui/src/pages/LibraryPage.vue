@@ -6,6 +6,7 @@ import {
   api,
   type LibraryDto,
   type LibraryFilePage,
+  type OrganizePreviewDto,
 } from "@/api/client";
 import Button from "@/components/ui/Button.vue";
 
@@ -17,6 +18,13 @@ const KINDS: Array<{ value: string; label: string }> = [
   { value: "leftover_dir", label: "残留目录" },
   { value: "unrecognized", label: "未识别" },
 ];
+
+/** 冲突类别的展示文案. */
+const CONFLICT_LABELS: Record<string, string> = {
+  exists: "目标已存在",
+  number_mismatch: "同名不同番号",
+  same_path: "源与目标相同",
+};
 
 const libraries = ref<LibraryDto[]>([]);
 const loading = ref(false);
@@ -30,6 +38,15 @@ const expanded = ref<number | null>(null);
 const expandedKind = ref<string | null>(null);
 const expandedFiles = ref<LibraryFilePage | null>(null);
 const filesLoading = ref(false);
+
+/** 整理预览. 只读: 后端不建目录不移动文件, 重复预览结果一致. */
+const preview = ref<OrganizePreviewDto | null>(null);
+const previewLibrary = ref<number | null>(null);
+const previewLoading = ref(false);
+
+function conflictLabel(kind: string): string {
+  return CONFLICT_LABELS[kind] ?? kind;
+}
 
 function report(kind: "error" | "ok", text: string): void {
   notice.value = { kind, text };
@@ -123,6 +140,25 @@ async function toggleFiles(library: LibraryDto, kind: string | null): Promise<vo
   }
 }
 
+async function loadPreview(library: LibraryDto): Promise<void> {
+  if (previewLibrary.value === library.id) {
+    previewLibrary.value = null;
+    preview.value = null;
+    return;
+  }
+  previewLibrary.value = library.id;
+  previewLoading.value = true;
+  preview.value = null;
+  try {
+    preview.value = await api.organizePreview(library.id);
+  } catch (error) {
+    report("error", describe(error));
+    previewLibrary.value = null;
+  } finally {
+    previewLoading.value = false;
+  }
+}
+
 onMounted(refresh);
 </script>
 
@@ -182,6 +218,13 @@ onMounted(refresh);
               >
                 {{ scanning === library.id ? "提交中" : "扫描" }}
               </Button>
+              <Button
+                variant="ghost"
+                :disabled="previewLoading"
+                @click="loadPreview(library)"
+              >
+                {{ previewLibrary === library.id && previewLoading ? "预览中" : "整理预览" }}
+              </Button>
               <button
                 class="text-neutral-500 hover:text-red-400"
                 @click="remove(library)"
@@ -234,6 +277,49 @@ onMounted(refresh);
                 <span v-if="file.detail" class="text-neutral-600">{{ file.detail }}</span>
               </li>
             </ul>
+          </div>
+
+          <div
+            v-if="previewLibrary === library.id"
+            class="border-t border-neutral-900 px-4 py-3"
+          >
+            <p v-if="previewLoading" class="text-xs text-neutral-500">预览计算中…</p>
+            <template v-else-if="preview">
+              <p class="text-xs text-neutral-500">
+                目标路径按当前模板渲染；预览不创建目录、不移动文件。
+                <template v-if="preview.unmatched > 0">
+                  {{ preview.unmatched }} 个文件提取不出番号，未参与整理。
+                </template>
+              </p>
+              <p
+                v-if="(preview.items.length ?? 0) === 0"
+                class="mt-2 text-xs text-neutral-600"
+              >
+                没有可整理的文件。先扫描，再确认文件名里带番号。
+              </p>
+              <ul v-else class="mt-2 space-y-2 font-mono text-xs">
+                <li
+                  v-for="item in preview.items"
+                  :key="item.source_path"
+                  class="flex flex-wrap items-baseline gap-2"
+                >
+                  <span class="text-neutral-500">{{ item.source_path }}</span>
+                  <span class="text-neutral-600">→</span>
+                  <span class="text-neutral-200">{{ item.target_path }}</span>
+                  <span
+                    v-if="item.conflict"
+                    :class="[
+                      'rounded px-1.5 py-0.5 text-[10px]',
+                      item.conflict === 'same_path'
+                        ? 'bg-neutral-800 text-neutral-400'
+                        : 'bg-amber-950/60 text-amber-300',
+                    ]"
+                  >
+                    {{ conflictLabel(item.conflict) }}
+                  </span>
+                </li>
+              </ul>
+            </template>
           </div>
         </article>
       </section>

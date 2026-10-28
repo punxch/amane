@@ -146,6 +146,7 @@ dependencies = [
  "axum",
  "chrono",
  "clap",
+ "futures",
  "schemars 1.2.3",
  "serde",
  "serde_json",

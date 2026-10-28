@@ -410,6 +410,7 @@ pub struct HotSettingsDto {
     pub request_timeout_secs: u32,
     pub enabled_sources: Vec<String>,
     pub scan: ScanSettingsDto,
+    pub organize: OrganizeSettingsDto,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -417,6 +418,11 @@ pub struct ScanSettingsDto {
     pub media_extensions: Vec<String>,
     pub min_file_size: u64,
     pub blacklist_patterns: Vec<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OrganizeSettingsDto {
+    pub video_template: String,
 }
 
 impl SettingsDto {
@@ -435,6 +441,9 @@ impl SettingsDto {
                     media_extensions: value.hot.scan.media_extensions.clone(),
                     min_file_size: value.hot.scan.min_file_size,
                     blacklist_patterns: value.hot.scan.blacklist_patterns.clone(),
+                },
+                organize: OrganizeSettingsDto {
+                    video_template: value.hot.organize.video_template.clone(),
                 },
             },
         }
@@ -522,4 +531,23 @@ pub struct LibraryFileQuery {
     pub kind: Option<String>,
     pub limit: Option<u32>,
     pub offset: Option<u32>,
+}
+
+/// 整理预览的传输形态. 预览不写盘, 冲突由后端判定, 处置选择在执行端点给出.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OrganizePreviewDto {
+    pub items: Vec<PreviewItemDto>,
+    /// 提取不出番号而无法参与整理的媒体文件数.
+    pub unmatched: i64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PreviewItemDto {
+    /// 源文件, 相对库根.
+    pub source_path: String,
+    /// 模板渲染出的目标路径, 相对库根.
+    pub target_path: String,
+    pub number: String,
+    /// 冲突类别: exists / number_mismatch / same_path; 为空表示可直接整理.
+    pub conflict: Option<String>,
 }

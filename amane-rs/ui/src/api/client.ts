@@ -31,6 +31,7 @@ export type LibraryDto = Schemas["LibraryDto"];
 export type LibraryPage = Schemas["LibraryPage"];
 export type LibraryFilePage = Schemas["LibraryFilePage"];
 export type CreateLibraryRequest = Schemas["CreateLibraryRequest"];
+export type OrganizePreviewDto = Schemas["OrganizePreviewDto"];
 
 /** 保存配置的请求体; 字段与 `Settings` 一致, 由后端拒绝未知取值. */
 export interface ConfigBody {
@@ -225,4 +226,7 @@ export const api = {
     const suffix = query.size === 0 ? "" : `?${query.toString()}`;
     return request(`/api/libraries/${id}/files${suffix}`);
   },
+
+  organizePreview: (id: number): Promise<OrganizePreviewDto> =>
+    request(`/api/libraries/${id}/organize/preview`, { method: "POST" }),
 };

@@ -17,9 +17,9 @@ use crate::dto::{
     ConfigState, ContentTypeOption, CreateLibraryRequest, CreateMetadataRequest,
     CreateScheduleRequest, CreateTaskRequest, ExtractedNumber, FilterOptions, HealthResponse,
     LibraryCountsDto, LibraryDto, LibraryFileDto, LibraryFilePage, LibraryFileQuery, LibraryPage,
-    ListQuery, LockRequest, MetadataDto, MetadataPage, ScheduleDto, SchedulePage, SettingsDto,
-    SourceOption, TagRequest, TaskDto, TaskListQuery, TaskLogEntry, TaskLogPage, TaskPage,
-    UpdateMetadataRequest, UpdateScheduleRequest,
+    ListQuery, LockRequest, MetadataDto, MetadataPage, OrganizePreviewDto, PreviewItemDto,
+    ScheduleDto, SchedulePage, SettingsDto, SourceOption, TagRequest, TaskDto, TaskListQuery,
+    TaskLogEntry, TaskLogPage, TaskPage, UpdateMetadataRequest, UpdateScheduleRequest,
 };
 use crate::error::{ApiError, ErrorBody};
 use crate::state::AppState;
@@ -70,6 +70,7 @@ pub fn router() -> Router<AppState> {
         .route("/libraries/{id}", axum::routing::delete(delete_library))
         .route("/libraries/{id}/scan", post(scan_library))
         .route("/libraries/{id}/files", get(list_library_files))
+        .route("/libraries/{id}/organize/preview", post(organize_preview))
 }
 
 #[utoipa::path(get, path = "/api/health", tag = "system", responses((status = 200, body = HealthResponse), (status = 401, body = crate::error::ErrorBody)))]
@@ -1113,5 +1114,97 @@ pub async fn list_library_files(
                 detail: file.detail,
             })
             .collect(),
+    }))
+}
+
+/// 整理预览: 只读地给出每个媒体文件的落点与冲突, 不创建目录也不移动文件.
+///
+/// 文件按文件名配对番号, 条目缺席时以番号参与渲染; 重复调用结果一致.
+#[utoipa::path(
+    post,
+    path = "/api/libraries/{id}/organize/preview",
+    tag = "library",
+    params(("id" = i64, Path, description = "媒体库标识")),
+    responses(
+        (status = 200, body = OrganizePreviewDto),
+        (status = 404, body = crate::error::ErrorBody),
+        (status = 401, body = crate::error::ErrorBody)
+    )
+)]
+pub async fn organize_preview(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Json<OrganizePreviewDto>, ApiError> {
+    let root = state
+        .runtime
+        .libraries
+        .find(id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound {
+            what: format!("媒体库 {id} 不存在"),
+        })?;
+
+    let settings = state.runtime.settings();
+    let template = amane_core::Template::parse(&settings.hot.organize.video_template)
+        .map_err(|error| ApiError::Internal(format!("路径模板无法解析: {error}")))?;
+
+    // 扫描索引里的媒体文件是预览的全部对象; 上限与扫描分页一致, 超出部分后续切片再分批.
+    let (_, media) = state
+        .runtime
+        .libraries
+        .files(id, Some(amane_core::ScanKind::Media), MAX_LIMIT, 0)
+        .await?;
+
+    // 逐文件提取番号; 提取不出的计入 unmatched, 不进入预览.
+    let mut unmatched = 0i64;
+    let mut numbers: Vec<(usize, amane_core::MediaNumber)> = Vec::new();
+    for (index, file) in media.iter().enumerate() {
+        match amane_core::number_from_path(&file.path) {
+            Some(number) => numbers.push((index, number)),
+            None => unmatched += 1,
+        }
+    }
+
+    // 条目查询并行发出: 读池多连接, 一次配齐全部条目.
+    let metadata = &state.runtime.metadata;
+    let entries: Vec<Option<amane_core::Metadata>> = futures::future::join_all(
+        numbers
+            .iter()
+            .map(|(_, number)| async move { metadata.find(number).await.ok().flatten() }),
+    )
+    .await;
+
+    let mut preview_requests: Vec<amane_core::PreviewRequest> = Vec::with_capacity(numbers.len());
+    for ((index, number), entry) in numbers.iter().zip(&entries) {
+        preview_requests.push(amane_core::PreviewRequest {
+            source_rel: &media[*index].path,
+            number: number.as_str(),
+            entry: entry.as_ref(),
+        });
+    }
+
+    let plans: std::collections::BTreeMap<String, String> = state
+        .runtime
+        .organize
+        .list_for_root(root.id)
+        .await?
+        .into_iter()
+        .map(|plan| (plan.path, plan.number))
+        .collect();
+
+    let preview = amane_core::build_preview(&template, &root.path_buf(), &preview_requests, &plans);
+
+    Ok(Json(OrganizePreviewDto {
+        items: preview
+            .items
+            .into_iter()
+            .map(|item| PreviewItemDto {
+                source_path: item.source_path,
+                target_path: item.target_path,
+                number: item.number,
+                conflict: item.conflict.map(|kind| kind.as_str().to_owned()),
+            })
+            .collect(),
+        unmatched: unmatched + preview.unmatched,
     }))
 }

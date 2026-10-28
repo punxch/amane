@@ -5,8 +5,9 @@ use arc_swap::ArcSwap;
 
 use amane_core::config::{ConfigError, Settings};
 use amane_core::{
-    Database, DbError, LibraryRepository, MetadataRepository, ResourceRepository,
-    ScheduleRepository, Scheduler, TaskHandler, TaskRepository, TaskRepositoryError, TaskService,
+    Database, DbError, LibraryRepository, MetadataRepository, OrganizeRepository,
+    ResourceRepository, ScheduleRepository, Scheduler, TaskHandler, TaskRepository,
+    TaskRepositoryError, TaskService,
 };
 use amane_crawlers::Registry;
 use amane_net::{Rate, RateLimiters, WebClient};
@@ -47,6 +48,8 @@ pub struct Runtime {
     settings: Arc<ArcSwap<Settings>>,
     /// 媒体库登记与扫描索引.
     pub libraries: LibraryRepository,
+    /// 整理登记. 预览判「同名不同番号」的依据, 执行切片负责写入.
+    pub organize: OrganizeRepository,
 }
 
 impl Runtime {
@@ -99,6 +102,7 @@ impl Runtime {
         );
         let schedules = ScheduleRepository::new(database.clone());
         let scheduler = Arc::new(Scheduler::new(schedules.clone(), Arc::clone(&tasks)));
+        let organize = OrganizeRepository::new(database.clone());
 
         Ok(Self {
             settings,
@@ -112,6 +116,7 @@ impl Runtime {
             client,
             apply_lock: tokio::sync::Mutex::new(()),
             libraries,
+            organize,
         })
     }
 
@@ -175,6 +180,10 @@ impl Runtime {
         if incoming.hot.scan != self.settings().hot.scan {
             // 扫描规则在每次扫描开始时读取快照, 存储即生效.
             applied.push("scan".to_owned());
+        }
+        if incoming.hot.organize != self.settings().hot.organize {
+            // 模板在保存时已解析校验, 预览与执行读取快照即生效.
+            applied.push("organize".to_owned());
         }
 
         // 只替换热层: 提交里的冷配置改动不在内存中生效, 要等重启进程.

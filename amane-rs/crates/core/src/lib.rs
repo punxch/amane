@@ -10,6 +10,7 @@ pub mod library;
 pub mod lockable;
 pub mod metadata;
 pub mod number;
+pub mod organize;
 pub mod resource;
 pub mod schedule;
 pub mod task;
@@ -26,6 +27,10 @@ pub use metadata::{
     RepositoryError, ScrapeApplied, ScrapeWrite,
 };
 pub use number::{MediaNumber, NumberError};
+pub use organize::{
+    ConflictKind, OrganizeError, OrganizePlan, OrganizePreview, OrganizeRepository, PLACEHOLDERS,
+    PreviewItem, PreviewRequest, Template, TemplateError, build_preview, number_from_path,
+};
 pub use resource::{Resource, ResourceError, ResourceRepository};
 pub use schedule::{
     Pattern, Schedule, ScheduleError, SchedulePatch, ScheduleRepository, ScheduleSpec, Scheduler,

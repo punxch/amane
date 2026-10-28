@@ -40,6 +40,8 @@ pub struct HotSettings {
     pub enabled_sources: Vec<String>,
     /// 扫描规则: 媒体扩展名、大小阈值与文件黑名单.
     pub scan: ScanSettings,
+    /// 整理规则: 目标路径模板.
+    pub organize: OrganizeSettings,
 }
 
 impl Default for HotSettings {
@@ -49,7 +51,36 @@ impl Default for HotSettings {
             request_timeout_secs: 20,
             enabled_sources: Vec::new(),
             scan: ScanSettings::default(),
+            organize: OrganizeSettings::default(),
         }
+    }
+}
+
+/// 整理规则. 模板在保存时解析校验, 渲染时不再处理语法错误.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct OrganizeSettings {
+    /// 视频目标路径模板; 相对库根, 占位符见 `PLACEHOLDERS`.
+    pub video_template: String,
+}
+
+impl Default for OrganizeSettings {
+    fn default() -> Self {
+        Self {
+            video_template: "{maker}/{number}/{number}.{ext}".to_owned(),
+        }
+    }
+}
+
+impl OrganizeSettings {
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        crate::organize::Template::parse(&self.video_template).map_err(|error| {
+            ConfigError::BadValue {
+                field: "organize.video_template",
+                reason: error.to_string(),
+            }
+        })?;
+        Ok(())
     }
 }
 
@@ -129,7 +160,8 @@ impl HotSettings {
             }
         }
 
-        self.scan.validate()
+        self.scan.validate()?;
+        self.organize.validate()
     }
 }
 
@@ -175,7 +207,30 @@ pub enum ConfigError {
 
 #[cfg(test)]
 mod tests {
-    use super::{ConfigError, HotSettings, ScanSettings, Settings};
+    use super::{ConfigError, HotSettings, OrganizeSettings, ScanSettings, Settings};
+
+    #[test]
+    fn organize_settings_reject_malformed_template() {
+        let settings = OrganizeSettings {
+            video_template: "{number".to_owned(),
+        };
+        match settings.validate() {
+            Err(ConfigError::BadValue { field, .. }) => {
+                assert_eq!(field, "organize.video_template");
+            }
+            other => panic!("应为模板错误, 实际 {other:?}"),
+        }
+
+        let settings = OrganizeSettings {
+            video_template: "{plot}".to_owned(),
+        };
+        match settings.validate() {
+            Err(ConfigError::BadValue { reason, .. }) => {
+                assert!(reason.contains("plot"), "应指出未知占位符, 实际 {reason}");
+            }
+            other => panic!("应为占位符错误, 实际 {other:?}"),
+        }
+    }
 
     #[test]
     fn scan_settings_reject_bad_extension_and_regex() {

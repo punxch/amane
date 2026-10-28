@@ -109,6 +109,20 @@ impl From<amane_core::ScheduleError> for ApiError {
     }
 }
 
+impl From<amane_core::OrganizeError> for ApiError {
+    fn from(error: amane_core::OrganizeError) -> Self {
+        match error {
+            amane_core::OrganizeError::PathTaken(path) => Self::Conflict {
+                message: format!("路径 {path} 已被占用"),
+            },
+            other => {
+                tracing::error!(%other, "整理登记操作失败");
+                Self::Internal("整理登记操作失败".to_owned())
+            }
+        }
+    }
+}
+
 impl From<NumberError> for ApiError {
     fn from(error: NumberError) -> Self {
         Self::InvalidNumber(error)
