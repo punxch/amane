@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use amane_core::LockableField;
+use amane_core::FIELDS;
 
 use crate::ScrapedMetadata;
 
@@ -26,62 +26,16 @@ pub fn aggregate(items: &[(&str, ScrapedMetadata)]) -> Aggregated {
     let mut merged = Aggregated::default();
 
     for (source, scraped) in items {
-        take_scalar(
-            &mut merged,
-            LockableField::Title.as_str(),
-            source,
-            &scraped.title,
-            |metadata| &mut metadata.title,
-        );
-        take_scalar(
-            &mut merged,
-            LockableField::Plot.as_str(),
-            source,
-            &scraped.plot,
-            |metadata| &mut metadata.plot,
-        );
-        take_scalar(
-            &mut merged,
-            LockableField::ReleaseDate.as_str(),
-            source,
-            &scraped.release_date,
-            |metadata| &mut metadata.release_date,
-        );
-        take_scalar(
-            &mut merged,
-            LockableField::RuntimeMinutes.as_str(),
-            source,
-            &scraped.runtime_minutes,
-            |metadata| &mut metadata.runtime_minutes,
-        );
-        take_scalar(
-            &mut merged,
-            LockableField::Maker.as_str(),
-            source,
-            &scraped.maker,
-            |metadata| &mut metadata.maker,
-        );
-        take_scalar(
-            &mut merged,
-            LockableField::Label.as_str(),
-            source,
-            &scraped.label,
-            |metadata| &mut metadata.label,
-        );
-        take_scalar(
-            &mut merged,
-            LockableField::Series.as_str(),
-            source,
-            &scraped.series,
-            |metadata| &mut metadata.series,
-        );
-        take_scalar(
-            &mut merged,
-            LockableField::PosterUrl.as_str(),
-            source,
-            &scraped.poster_url,
-            |metadata| &mut metadata.poster_url,
-        );
+        // 标量字段的合并方式在字段表里, 这里只负责记下谁贡献了它.
+        for spec in FIELDS {
+            if (spec.merge)(&mut merged.metadata, scraped) {
+                merged
+                    .field_sources
+                    .insert(spec.field.as_str().to_owned(), (*source).to_owned());
+            }
+        }
+
+        // 封面与三类列表不可锁, 不参与逐字段修订, 各自整份合并.
         take_scalar(
             &mut merged,
             "cover_url",

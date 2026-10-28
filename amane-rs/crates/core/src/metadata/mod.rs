@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+mod field;
 mod removal;
 
+pub use field::{FIELDS, FieldSpec, FieldValue};
 pub use removal::{MetadataRemoval, ResourceFiles};
 
 use chrono::{DateTime, NaiveDate, Utc};
@@ -224,70 +226,25 @@ pub struct MetadataInput<'a> {
     pub actors: Option<&'a [String]>,
 }
 
-/// 一个可锁字段在本次输入里的取值形态.
-///
-/// 三类列各有自己的类型; 取值的「有没有」与「被锁定」都从这一处读, 两处判断不会各说各话.
-enum Slot<'a> {
-    Text(Option<&'a str>),
-    Date(Option<NaiveDate>),
-    Number(Option<i32>),
-}
-
-impl Slot<'_> {
-    fn is_present(&self) -> bool {
-        match self {
-            Self::Text(value) => value.is_some(),
-            Self::Date(value) => value.is_some(),
-            Self::Number(value) => value.is_some(),
-        }
-    }
-}
-
 impl MetadataInput<'_> {
-    /// 该字段在本次输入里的取值形态.
-    fn slot(&self, field: LockableField) -> Slot<'_> {
-        match field {
-            LockableField::Title => Slot::Text(self.title),
-            LockableField::Plot => Slot::Text(self.plot),
-            LockableField::ReleaseDate => Slot::Date(self.release_date),
-            LockableField::RuntimeMinutes => Slot::Number(self.runtime_minutes),
-            LockableField::Maker => Slot::Text(self.maker),
-            LockableField::Label => Slot::Text(self.label),
-            LockableField::Series => Slot::Text(self.series),
-            LockableField::PosterUrl => Slot::Text(self.poster_url),
-        }
-    }
+    /// 去掉被锁定字段后的输入, 以及因此被丢弃的字段.
+    ///
+    /// 返回的字段正是「本次有值但被锁挡住」的那些, 供任务日志说明跳过原因.
+    pub fn without_locked(&self, locks: &BTreeSet<LockableField>) -> (Self, Vec<LockableField>) {
+        let mut effective = self.clone();
+        let mut dropped = Vec::new();
 
-    /// 本次输入是否带有该字段的值. 用于区分「因锁定而保留」与「本次本来就没提供」.
-    pub fn has_value(&self, field: LockableField) -> bool {
-        self.slot(field).is_present()
-    }
-}
-
-impl<'a> MetadataInput<'a> {
-    /// 去掉被锁定字段后的输入. 锁定的字段以 `None` 参与写入, 由 `COALESCE` 保留原值.
-    pub fn without_locked(&self, locks: &BTreeSet<LockableField>) -> Self {
-        fn keep<T>(
-            locks: &BTreeSet<LockableField>,
-            field: LockableField,
-            value: Option<T>,
-        ) -> Option<T> {
-            if locks.contains(&field) { None } else { value }
+        for spec in FIELDS {
+            if !locks.contains(&spec.field) {
+                continue;
+            }
+            if (spec.clear)(&mut effective) {
+                dropped.push(spec.field);
+            }
         }
+        dropped.sort_unstable();
 
-        Self {
-            title: keep(locks, LockableField::Title, self.title),
-            plot: keep(locks, LockableField::Plot, self.plot),
-            release_date: keep(locks, LockableField::ReleaseDate, self.release_date),
-            runtime_minutes: keep(locks, LockableField::RuntimeMinutes, self.runtime_minutes),
-            maker: keep(locks, LockableField::Maker, self.maker),
-            label: keep(locks, LockableField::Label, self.label),
-            series: keep(locks, LockableField::Series, self.series),
-            poster_url: keep(locks, LockableField::PosterUrl, self.poster_url),
-            cover_url: self.cover_url,
-            genres: self.genres,
-            actors: self.actors,
-        }
+        (effective, dropped)
     }
 }
 
@@ -338,61 +295,59 @@ fn merge_sources(
     merged
 }
 
-/// 一次修订里要写的一列.
-///
-/// 列名与字段成对出现, 写列与登记 `touched` 由同一处产生.
-enum Column<'a> {
-    Text(&'static str, LockableField, Option<&'a str>),
-    Number(&'static str, LockableField, Option<i32>),
-    /// 可写但不可锁的列 (备注).
-    Plain(&'static str, Option<&'a str>),
-}
-
 /// 写入或更新一行, 调用方负责事务边界.
+///
+/// 列清单、取值与 `COALESCE` 都从字段表生成: 加字段不必改这段 SQL, 也不会出现
+/// 「列顺序与绑定顺序对不上」这类静默错位.
 async fn upsert_row(
     transaction: &mut sqlx::Transaction<'_, Sqlite>,
     number: &MediaNumber,
     input: &MetadataInput<'_>,
 ) -> Result<Metadata, sqlx::Error> {
     let now = Utc::now();
-    let row = sqlx::query_as::<_, Metadata>(
-        r#"
-        INSERT INTO metadata (
-            number, title, plot, release_date, runtime_minutes,
-            maker, label, series, poster_url, cover_url, genres, content_type, created_at, updated_at
-        )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)
-        ON CONFLICT(number) DO UPDATE SET
-            title = COALESCE(excluded.title, metadata.title),
-            plot = COALESCE(excluded.plot, metadata.plot),
-            release_date = COALESCE(excluded.release_date, metadata.release_date),
-            runtime_minutes = COALESCE(excluded.runtime_minutes, metadata.runtime_minutes),
-            maker = COALESCE(excluded.maker, metadata.maker),
-            label = COALESCE(excluded.label, metadata.label),
-            series = COALESCE(excluded.series, metadata.series),
-            poster_url = COALESCE(excluded.poster_url, metadata.poster_url),
-            cover_url = COALESCE(excluded.cover_url, metadata.cover_url),
-            genres = COALESCE(excluded.genres, metadata.genres),
-            content_type = excluded.content_type,
-            updated_at = excluded.updated_at
-        RETURNING *
-        "#,
-    )
-    .bind(number.as_str())
-    .bind(input.title)
-    .bind(input.plot)
-    .bind(input.release_date)
-    .bind(input.runtime_minutes)
-    .bind(input.maker)
-    .bind(input.label)
-    .bind(input.series)
-    .bind(input.poster_url)
-    .bind(input.cover_url)
-    .bind(input.genres.map(|values| Json(Genres::from(values))))
-    .bind(number.content_type())
-    .bind(now)
-    .fetch_one(&mut **transaction)
-    .await?;
+
+    let mut builder = QueryBuilder::<Sqlite>::new("INSERT INTO metadata (number");
+    for spec in FIELDS {
+        builder.push(", ").push(spec.field.as_str());
+    }
+    builder.push(", cover_url, genres, content_type, created_at, updated_at) VALUES (");
+    builder.push_bind(number.as_str());
+    for spec in FIELDS {
+        builder.push(", ");
+        push_value(&mut builder, (spec.take)(input));
+    }
+    builder
+        .push(", ")
+        .push_bind(input.cover_url)
+        .push(", ")
+        .push_bind(input.genres.map(|values| Json(Genres::from(values))))
+        .push(", ")
+        .push_bind(number.content_type())
+        .push(", ")
+        .push_bind(now)
+        .push(", ")
+        .push_bind(now)
+        .push(") ON CONFLICT(number) DO UPDATE SET ");
+
+    for spec in FIELDS {
+        let column = spec.field.as_str();
+        builder
+            .push(column)
+            .push(" = COALESCE(excluded.")
+            .push(column)
+            .push(", metadata.")
+            .push(column)
+            .push("), ");
+    }
+    builder
+        .push("cover_url = COALESCE(excluded.cover_url, metadata.cover_url), ")
+        .push("genres = COALESCE(excluded.genres, metadata.genres), ")
+        .push("content_type = excluded.content_type, updated_at = excluded.updated_at RETURNING *");
+
+    let row = builder
+        .build_query_as::<Metadata>()
+        .fetch_one(&mut **transaction)
+        .await?;
 
     if let Some(actors) = input.actors {
         sqlx::query("DELETE FROM metadata_actor WHERE metadata_id = ?1")
@@ -426,6 +381,25 @@ async fn upsert_row(
     }
 
     Ok(row)
+}
+
+/// 把一个字段取值绑定到查询; 三种列各有自己的 SQL 类型, 分派只在这里发生一次.
+fn push_value(builder: &mut QueryBuilder<'_, Sqlite>, value: Option<FieldValue>) {
+    match value {
+        Some(FieldValue::Text(text)) => {
+            builder.push_bind(blank_to_none(&text).map(str::to_owned));
+        }
+        Some(FieldValue::Date(date)) => {
+            builder.push_bind(date);
+        }
+        Some(FieldValue::Number(minutes)) => {
+            builder.push_bind(minutes);
+        }
+        // 来源没有给出这一项: 写 NULL, 由 `COALESCE` 保留既有值.
+        None => {
+            builder.push_bind(Option::<String>::None);
+        }
+    }
 }
 
 /// 读取某个番号条目的锁定字段. 事务与连接池共用同一份实现.
@@ -526,7 +500,8 @@ impl MetadataRepository {
             None => BTreeSet::new(),
         };
 
-        let effective = input.without_locked(&locks);
+        // 被丢弃的字段在这里不需要报告: 调用方没有「本次刮到了什么」的上下文.
+        let (effective, _dropped) = input.without_locked(&locks);
         let row = upsert_row(&mut transaction, number, &effective).await?;
         transaction.commit().await?;
 
@@ -554,7 +529,8 @@ impl MetadataRepository {
             None => BTreeSet::new(),
         };
 
-        let effective = write.input.without_locked(&locks);
+        // 只报告「本次有值但被锁挡住」的字段; 其余锁与本次刮削无关, 列出来会误导.
+        let (effective, kept) = write.input.without_locked(&locks);
         let row = upsert_row(&mut transaction, write.number, &effective).await?;
 
         // 字段来源按字段合并: 锁定字段保留原来源, 其余字段采用本次命中的来源.
@@ -572,13 +548,6 @@ impl MetadataRepository {
         .await?;
 
         transaction.commit().await?;
-
-        // 只报告「本次有值但被锁挡住」的字段; 其余锁与本次刮削无关, 列出来会误导.
-        let mut kept: Vec<LockableField> = locks
-            .into_iter()
-            .filter(|field| write.input.has_value(*field))
-            .collect();
-        kept.sort_unstable();
 
         Ok(ScrapeApplied { row, kept })
     }
@@ -741,69 +710,45 @@ impl MetadataRepository {
             return Err(RepositoryError::NotFound);
         };
 
-        let release_date = match patch.release_date {
-            None => None,
-            Some(raw) if raw.trim().is_empty() => Some(None),
-            Some(raw) => Some(Some(
-                NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d").map_err(|_| {
-                    RepositoryError::InvalidInput(format!("上映日期应形如 2021-02-18: {raw}"))
-                })?,
-            )),
-        };
-
-        // 列名、字段与取值放在一处: 赋值与 `touched` 由同一个循环产生, 不会一边写列一边漏记字段.
-        let columns = [
-            Column::Text("title", LockableField::Title, patch.title),
-            Column::Text("plot", LockableField::Plot, patch.plot),
-            Column::Text("maker", LockableField::Maker, patch.maker),
-            Column::Text("label", LockableField::Label, patch.label),
-            Column::Text("series", LockableField::Series, patch.series),
-            Column::Number(
-                "runtime_minutes",
-                LockableField::RuntimeMinutes,
-                patch.runtime_minutes,
-            ),
-            // 备注可写但不可锁.
-            Column::Plain("note", patch.note),
-        ];
-
+        // 列名与取值都取自字段表: 写列与登记 `touched` 由同一个循环产生, 不会一边写列一边漏记字段.
         let mut touched: Vec<LockableField> = Vec::new();
         let mut builder = QueryBuilder::<Sqlite>::new("UPDATE metadata SET ");
         {
             let mut assignments = builder.separated(", ");
 
-            // 上映日期可以显式清空: `Some(None)` 表示写 NULL, 与其余列的「不提供即不改」不同.
-            if let Some(date) = release_date {
-                assignments
-                    .push("release_date = ")
-                    .push_bind_unseparated(date);
-                touched.push(LockableField::ReleaseDate);
+            for spec in FIELDS {
+                let Some(value) = (spec.patch)(patch)? else {
+                    continue;
+                };
+                match value {
+                    FieldValue::Text(text) => {
+                        assignments
+                            .push(spec.field.as_str())
+                            .push_unseparated(" = ")
+                            .push_bind_unseparated(blank_to_none(&text).map(str::to_owned));
+                    }
+                    FieldValue::Date(date) => {
+                        assignments
+                            .push(spec.field.as_str())
+                            .push_unseparated(" = ")
+                            .push_bind_unseparated(date);
+                    }
+                    FieldValue::Number(minutes) => {
+                        assignments
+                            .push(spec.field.as_str())
+                            .push_unseparated(" = ")
+                            .push_bind_unseparated(minutes);
+                    }
+                }
+                touched.push(spec.field);
             }
 
-            for column in columns {
-                match column {
-                    Column::Text(key, field, Some(value)) => {
-                        assignments
-                            .push(key)
-                            .push_unseparated(" = ")
-                            .push_bind_unseparated(blank_to_none(value));
-                        touched.push(field);
-                    }
-                    Column::Number(key, field, Some(value)) => {
-                        assignments
-                            .push(key)
-                            .push_unseparated(" = ")
-                            .push_bind_unseparated(value);
-                        touched.push(field);
-                    }
-                    Column::Plain(key, Some(value)) => {
-                        assignments
-                            .push(key)
-                            .push_unseparated(" = ")
-                            .push_bind_unseparated(blank_to_none(value));
-                    }
-                    Column::Text(..) | Column::Number(..) | Column::Plain(..) => {}
-                }
+            // 备注可写但不可锁, 不属于刮削字段, 因此不进字段表.
+            if let Some(note) = patch.note {
+                assignments
+                    .push("note")
+                    .push_unseparated(" = ")
+                    .push_bind_unseparated(blank_to_none(note));
             }
 
             assignments

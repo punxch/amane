@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use amane_core::{LockableField, Metadata, MetadataPatch, Pattern, Schedule, Task, TaskLogLine};
+use amane_core::{
+    FIELDS, LockableField, Metadata, MetadataPatch, Pattern, Schedule, Task, TaskLogLine,
+};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -109,31 +111,24 @@ pub struct MetadataFieldDto {
     pub locked: bool,
 }
 
-impl MetadataDto {
-    /// 逐字段视图. 界面据此渲染字段列表与锁按钮, 不自行维护字段清单.
-    pub fn field_views(&self, locks: &BTreeSet<LockableField>) -> Vec<MetadataFieldDto> {
-        LockableField::ALL
-            .into_iter()
-            .map(|field| MetadataFieldDto {
-                field: field.as_str().to_owned(),
-                label: field.label().to_owned(),
-                value: match field {
-                    LockableField::Title => self.title.clone(),
-                    LockableField::Plot => self.plot.clone(),
-                    LockableField::ReleaseDate => self.release_date.clone(),
-                    LockableField::RuntimeMinutes => {
-                        self.runtime_minutes.map(|minutes| minutes.to_string())
-                    }
-                    LockableField::Maker => self.maker.clone(),
-                    LockableField::Label => self.label.clone(),
-                    LockableField::Series => self.series.clone(),
-                    LockableField::PosterUrl => self.poster_url.clone(),
-                },
-                source: self.field_sources.get(field.as_str()).cloned(),
-                locked: locks.contains(&field),
-            })
-            .collect()
-    }
+/// 逐字段视图. 界面据此渲染字段列表与锁按钮, 不自行维护字段清单.
+pub fn field_views(metadata: &Metadata, locks: &BTreeSet<LockableField>) -> Vec<MetadataFieldDto> {
+    let sources = metadata
+        .field_sources
+        .as_ref()
+        .map(|json| json.0.to_map())
+        .unwrap_or_default();
+
+    FIELDS
+        .iter()
+        .map(|spec| MetadataFieldDto {
+            field: spec.field.as_str().to_owned(),
+            label: spec.field.label().to_owned(),
+            value: (spec.read)(metadata),
+            source: sources.get(spec.field.as_str()).cloned(),
+            locked: locks.contains(&spec.field),
+        })
+        .collect()
 }
 
 /// 手工修订. 未提供的字段保持不变; 空字符串表示清空.

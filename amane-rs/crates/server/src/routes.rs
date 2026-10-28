@@ -20,7 +20,7 @@ use crate::dto::{
     OrganizeExecuteRequest, OrganizePreviewDto, PreviewItemDto, RelatedCounts, RestoreRequest,
     ScheduleDto, SchedulePage, SettingsDto, SourceOption, TagRequest, TaskDto, TaskListQuery,
     TaskLogEntry, TaskLogPage, TaskPage, TrashItemDto, TrashPageDto, UpdateConfigRequest,
-    UpdateMetadataRequest, UpdateScheduleRequest,
+    UpdateMetadataRequest, UpdateScheduleRequest, field_views,
 };
 use crate::error::{ApiError, ApiJson, ErrorBody};
 use crate::state::AppState;
@@ -166,7 +166,7 @@ async fn load_detail(state: &AppState, number: &MediaNumber) -> Result<MetadataD
             what: format!("影片 {number} 不存在"),
         })?;
 
-    let mut dto = MetadataDto::from(row);
+    let mut dto = MetadataDto::from(row.clone());
     dto.actors = state.runtime.metadata.actors(dto.id).await?;
     dto.sources = state
         .runtime
@@ -178,7 +178,7 @@ async fn load_detail(state: &AppState, number: &MediaNumber) -> Result<MetadataD
         .collect();
     dto.tags = state.runtime.metadata.tags(dto.id).await?;
     let locks = state.runtime.metadata.locks(dto.id).await?;
-    dto.fields = dto.field_views(&locks);
+    dto.fields = field_views(&row, &locks);
     dto.locked_fields = locks
         .iter()
         .map(|field| field.as_str().to_owned())

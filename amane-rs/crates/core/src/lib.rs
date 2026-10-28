@@ -23,9 +23,10 @@ pub use library::{
 };
 pub use lockable::LockableField;
 pub use metadata::{
-    FieldSources, FilterError, MANUAL_SOURCE, Metadata, MetadataFilter, MetadataInput,
-    MetadataPatch, MetadataRemoval, MetadataRepository, RepositoryError, ResourceFiles,
-    ScrapeApplied, ScrapeWrite, ScrapedMetadata, SourceSnapshot, SourceSnapshotInput,
+    FIELDS, FieldSources, FieldSpec, FieldValue, FilterError, MANUAL_SOURCE, Metadata,
+    MetadataFilter, MetadataInput, MetadataPatch, MetadataRemoval, MetadataRepository,
+    RepositoryError, ResourceFiles, ScrapeApplied, ScrapeWrite, ScrapedMetadata, SourceSnapshot,
+    SourceSnapshotInput,
 };
 pub use number::{MediaNumber, NumberError};
 pub use organize::{
