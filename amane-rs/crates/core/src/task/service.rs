@@ -586,4 +586,50 @@ mod tests {
         assert_eq!(children.len(), 1, "完成后应留下一条后继任务");
         assert_eq!(children[0].kind, TaskKind::Organize);
     }
+
+    #[tokio::test]
+    async fn child_failure_does_not_change_parent() {
+        let parent_handler = FnHandler::new(TaskKind::Scrape, |_context| async {
+            Ok(TaskOutcome::with_followups(vec![TaskSpec::new(
+                TaskKind::Assets,
+                serde_json::json!({ "number": "ABC-001" }),
+            )]))
+        });
+        let child_handler = FnHandler::new(TaskKind::Assets, |_context| async {
+            Err(TaskError::Failed("下载失败".to_owned()))
+        });
+        let harness = harness(vec![parent_handler, child_handler], 1).await;
+
+        let parent = harness
+            .service
+            .submit(scrape("ABC-001"))
+            .await
+            .expect("应入队");
+        wait_terminal(&harness.repository, parent.id).await;
+        let children = harness
+            .repository
+            .children(parent.id)
+            .await
+            .expect("应查询成功");
+        wait_terminal(&harness.repository, children[0].id).await;
+
+        let stored = harness
+            .repository
+            .find(parent.id)
+            .await
+            .expect("应查询成功")
+            .expect("应存在");
+        assert_eq!(
+            stored.status,
+            TaskStatus::Done,
+            "子任务失败不影响父任务终态"
+        );
+        let child = harness
+            .repository
+            .find(children[0].id)
+            .await
+            .expect("应查询成功")
+            .expect("应存在");
+        assert_eq!(child.status, TaskStatus::Failed, "子任务自己失败");
+    }
 }

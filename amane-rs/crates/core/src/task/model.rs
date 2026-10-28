@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 #[sqlx(rename_all = "snake_case")]
 pub enum TaskKind {
     Scrape,
+    /// 取回条目的海报与封面; 由刮削派生.
+    Assets,
     /// 扫描一个媒体库目录, 归类文件并记录增量.
     Scan,
     Organize,
@@ -21,8 +23,9 @@ pub enum TaskKind {
 
 impl TaskKind {
     /// 全部取值. `as_str` 是唯一的字符串表, 解析从这里反查.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Scrape,
+        Self::Assets,
         Self::Scan,
         Self::Organize,
         Self::Refresh,
@@ -32,6 +35,7 @@ impl TaskKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Scrape => "scrape",
+            Self::Assets => "assets",
             Self::Scan => "scan",
             Self::Organize => "organize",
             Self::Refresh => "refresh",

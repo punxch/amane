@@ -11,7 +11,9 @@ use amane_core::{
 };
 use amane_crawlers::Registry;
 use amane_net::{Rate, RateLimiters, WebClient};
-use amane_runtime::{CleanupHandler, OrganizeHandler, ResourceStore, ScanHandler, ScrapeHandler};
+use amane_runtime::{
+    AssetsHandler, CleanupHandler, OrganizeHandler, ResourceStore, ScanHandler, ScrapeHandler,
+};
 
 /// 启动失败的原因.
 #[derive(Debug, thiserror::Error)]
@@ -88,11 +90,8 @@ impl Runtime {
         let organize = OrganizeRepository::new(database.clone());
         let settings = Arc::new(ArcSwap::from_pointee(settings));
         let handlers: Vec<Arc<dyn TaskHandler>> = vec![
-            ScrapeHandler::new(
-                Arc::clone(&sources),
-                metadata.clone(),
-                Arc::clone(&resources),
-            ),
+            ScrapeHandler::new(Arc::clone(&sources), metadata.clone()),
+            AssetsHandler::new(metadata.clone(), Arc::clone(&resources)),
             ScanHandler::new(libraries.clone(), Arc::clone(&settings)),
             OrganizeHandler::new(
                 libraries.clone(),

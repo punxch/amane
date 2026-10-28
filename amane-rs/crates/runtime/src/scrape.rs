@@ -3,15 +3,13 @@
 use std::sync::Arc;
 
 use amane_core::{
-    LockableField, MediaNumber, MetadataInput, MetadataRepository, ScrapeWrite,
-    SourceSnapshotInput, TaskContext, TaskError, TaskHandler, TaskKind, TaskLogger, TaskOutcome,
+    MediaNumber, MetadataInput, MetadataRepository, ScrapeWrite, SourceSnapshotInput, TaskContext,
+    TaskError, TaskHandler, TaskKind, TaskLogger, TaskOutcome, TaskSpec,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
 
 use amane_crawlers::{Capability, Registry, ScrapedMetadata, SourceError, aggregate};
-
-use crate::resource::ResourceStore;
 
 /// 刮削任务的载荷.
 #[derive(Debug, Deserialize)]
@@ -25,20 +23,11 @@ struct ScrapePayload {
 pub struct ScrapeHandler {
     sources: Arc<Registry>,
     metadata: MetadataRepository,
-    resources: Arc<ResourceStore>,
 }
 
 impl ScrapeHandler {
-    pub fn new(
-        sources: Arc<Registry>,
-        metadata: MetadataRepository,
-        resources: Arc<ResourceStore>,
-    ) -> Arc<Self> {
-        Arc::new(Self {
-            sources,
-            metadata,
-            resources,
-        })
+    pub fn new(sources: Arc<Registry>, metadata: MetadataRepository) -> Arc<Self> {
+        Arc::new(Self { sources, metadata })
     }
 }
 
@@ -155,81 +144,11 @@ impl TaskHandler for ScrapeHandler {
             .replace_snapshots(row.id, &snapshots)
             .await
             .map_err(|error| TaskError::Failed(format!("写入来源快照失败: {error}")))?;
-        // 上游问题 (下载失败) 只告警; 本地写库失败才判任务失败.
-        let poster_locked = applied.kept.contains(&LockableField::PosterUrl);
-        if poster_locked {
-            context.logger.info("海报字段已锁定, 跳过下载").await;
-        } else if let Some(url) = row.poster_url.as_deref() {
-            self.store_image(&context, row.id, url, ImageKind::Poster)
-                .await?;
-        }
-        if let Some(url) = row.cover_url.as_deref() {
-            self.store_image(&context, row.id, url, ImageKind::Cover)
-                .await?;
-        }
-
-        Ok(TaskOutcome::done())
-    }
-}
-
-/// 两类图: 竖版海报与横版封面. 各自的登记位置不同, 其余流程一致.
-#[derive(Debug, Clone, Copy)]
-enum ImageKind {
-    Poster,
-    Cover,
-}
-
-impl ImageKind {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Poster => "海报",
-            Self::Cover => "封面",
-        }
-    }
-}
-
-/// 下载一张图并挂到条目上.
-///
-/// 下载失败只告警: 条目已经写好, 缺图是允许的降级. 本地写库失败才判任务失败.
-impl ScrapeHandler {
-    async fn store_image(
-        &self,
-        context: &TaskContext,
-        metadata_id: i64,
-        url: &str,
-        kind: ImageKind,
-    ) -> Result<(), TaskError> {
-        let label = kind.label();
-        context.logger.info(format!("下载{label}")).await;
-
-        let resource = match self.resources.materialize(url).await {
-            Ok(resource) => resource,
-            Err(error) => {
-                context
-                    .logger
-                    .warn(format!("{label}下载失败: {error}"))
-                    .await;
-                return Ok(());
-            }
-        };
-        context
-            .logger
-            .info(format!("{label}已存到本地: {}", resource.file_name))
-            .await;
-
-        let linked = match kind {
-            ImageKind::Poster => {
-                self.metadata
-                    .set_poster_resource(metadata_id, resource.id)
-                    .await
-            }
-            ImageKind::Cover => {
-                self.metadata
-                    .set_cover_resource(metadata_id, resource.id)
-                    .await
-            }
-        };
-        linked.map_err(|error| TaskError::Failed(format!("关联{label}失败: {error}")))
+        // 图片下载拆成后继任务: 下载失败不该让刮削判失败, 拆开之后失败有独立记录与重试入口.
+        Ok(TaskOutcome::with_followups(vec![TaskSpec::new(
+            TaskKind::Assets,
+            serde_json::json!({ "number": row.number }),
+        )]))
     }
 }
 
@@ -259,7 +178,7 @@ mod tests {
 
     use amane_core::{
         Database, LockableField, MediaNumber, MetadataInput, MetadataRepository, TaskContext,
-        TaskError, TaskHandler, TaskLogger, TaskOutcome,
+        TaskError, TaskHandler, TaskKind, TaskLogger, TaskOutcome,
     };
     use async_trait::async_trait;
     use tokio_util::sync::CancellationToken;
@@ -276,11 +195,6 @@ mod tests {
 
     enum StubOutcome {
         Hit(Option<&'static str>),
-        /// 命中, 且带两类图的地址; 地址不可达时用来验证降级.
-        HitWithImages {
-            poster: &'static str,
-            cover: &'static str,
-        },
         Transport,
         Parse {
             raw: &'static str,
@@ -298,12 +212,6 @@ mod tests {
             match self.outcome {
                 StubOutcome::Hit(title) => Ok(ScrapedMetadata {
                     title: title.map(|title| format!("{title} {number}")),
-                    ..ScrapedMetadata::default()
-                }),
-                StubOutcome::HitWithImages { poster, cover } => Ok(ScrapedMetadata {
-                    title: Some(format!("命中 {number}")),
-                    poster_url: Some(poster.to_owned()),
-                    cover_url: Some(cover.to_owned()),
                     ..ScrapedMetadata::default()
                 }),
                 StubOutcome::Transport => Err(SourceError::Transport {
@@ -345,14 +253,6 @@ mod tests {
         )
     }
 
-    fn source_with_images(
-        id: &'static str,
-        poster: &'static str,
-        cover: &'static str,
-    ) -> Box<dyn Source> {
-        stub(id, StubOutcome::HitWithImages { poster, cover })
-    }
-
     fn unparsable(id: &'static str, raw: &'static str, extension: &'static str) -> Box<dyn Source> {
         stub(id, StubOutcome::Parse { raw, extension })
     }
@@ -369,23 +269,7 @@ mod tests {
             .await
             .expect("应打开数据库");
         let metadata = MetadataRepository::new(database.clone());
-        let client = Arc::new(
-            amane_net::WebClient::new(
-                std::time::Duration::from_secs(5),
-                amane_net::RateLimiters::new(amane_net::Rate::per_second(1, 1.0)),
-            )
-            .expect("客户端应构造成功"),
-        );
-        let resources = Arc::new(crate::resource::ResourceStore::new(
-            dir.path().join("resources"),
-            amane_core::ResourceRepository::new(database),
-            client,
-        ));
-        let handler = ScrapeHandler::new(
-            Arc::new(Registry::new(sources)),
-            metadata.clone(),
-            resources,
-        );
+        let handler = ScrapeHandler::new(Arc::new(Registry::new(sources)), metadata.clone());
 
         Fixture {
             dir,
@@ -426,7 +310,7 @@ mod tests {
         .await
         .expect("应完成");
 
-        assert!(outcome.followups.is_empty());
+        assert_eq!(outcome.followups.len(), 1, "刮削总会派生一个资源任务");
         let number = MediaNumber::parse("ABC-123").expect("应解析成功");
         let row = fixture
             .metadata
@@ -480,13 +364,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn image_download_failure_still_writes_entry() {
-        let fixture = fixture(vec![source_with_images(
-            "working",
-            "https://example.invalid/poster.jpg",
-            "https://example.invalid/cover.jpg",
-        )])
-        .await;
+    async fn scrape_derives_assets_task() {
+        let fixture = fixture(vec![source("working", Some("命中"), false)]).await;
 
         let outcome = run(
             &fixture.handler,
@@ -494,27 +373,13 @@ mod tests {
             serde_json::json!({ "number": "ABC-123" }),
         )
         .await
-        .expect("下载失败不应让任务失败");
+        .expect("应完成");
 
-        assert!(outcome.followups.is_empty());
-        let number = MediaNumber::parse("ABC-123").expect("应解析成功");
-        let row = fixture
-            .metadata
-            .find(&number)
-            .await
-            .expect("应查询成功")
-            .expect("条目应已写入");
+        assert_eq!(outcome.followups.len(), 1, "刮削应派生一个资源任务");
+        assert_eq!(outcome.followups[0].kind, TaskKind::Assets);
         assert_eq!(
-            row.poster_url.as_deref(),
-            Some("https://example.invalid/poster.jpg")
-        );
-        assert!(
-            row.poster_resource_id.is_none(),
-            "海报下载失败, 不应有本地资源"
-        );
-        assert!(
-            row.cover_resource_id.is_none(),
-            "封面下载失败, 不应有本地资源"
+            outcome.followups[0].payload["number"], "ABC-123",
+            "后继任务要带番号"
         );
     }
 
