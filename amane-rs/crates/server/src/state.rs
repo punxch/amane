@@ -36,7 +36,7 @@ pub struct Runtime {
     pub metadata: MetadataRepository,
     pub tasks: Arc<TaskService>,
     pub resources: Arc<ResourceStore>,
-    /// 删除条目的入口: 库内事务与文件清理都在它后面.
+    /// 删除条目的入口: 数据库事务与文件清理都在它后面.
     pub removal: amane_core::MetadataRemoval,
     /// 整理预览的装配: HTTP 端点与整理任务共用.
     pub preview: amane_core::PreviewAssembler,

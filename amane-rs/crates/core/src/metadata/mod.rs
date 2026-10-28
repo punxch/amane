@@ -792,7 +792,7 @@ impl MetadataRepository {
                     Column::Number(key, field, Some(value)) => {
                         assignments
                             .push(key)
-                            .push(" = ")
+                            .push_unseparated(" = ")
                             .push_bind_unseparated(value);
                         touched.push(field);
                     }
@@ -1366,6 +1366,34 @@ mod tests {
                 "{field} 的来源应记为人工"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn patch_writes_every_column() {
+        let (_dir, repository) = repository().await;
+        let number = MediaNumber::parse("ABC-009").expect("应解析成功");
+        repository
+            .upsert(&number, &MetadataInput::default())
+            .await
+            .expect("应写入成功");
+
+        // 数值列与文本列的赋值拼接不同, 漏一个分隔符就会拼出语法错误.
+        let row = repository
+            .update_fields(
+                &number,
+                &MetadataPatch {
+                    title: Some("标题"),
+                    runtime_minutes: Some(120),
+                    note: Some("备注"),
+                    ..MetadataPatch::default()
+                },
+            )
+            .await
+            .expect("应修订成功");
+
+        assert_eq!(row.title.as_deref(), Some("标题"));
+        assert_eq!(row.runtime_minutes, Some(120));
+        assert_eq!(row.note.as_deref(), Some("备注"));
     }
 
     #[test]

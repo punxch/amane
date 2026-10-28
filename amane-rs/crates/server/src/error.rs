@@ -173,6 +173,21 @@ impl From<RepositoryError> for ApiError {
     }
 }
 
+impl From<amane_core::PreviewError> for ApiError {
+    fn from(error: amane_core::PreviewError) -> Self {
+        match error {
+            // 模板不合法是配置问题, 说明要原样带回界面.
+            amane_core::PreviewError::Template(inner) => Self::Internal(inner.to_string()),
+            amane_core::PreviewError::Library(inner) => inner.into(),
+            amane_core::PreviewError::Metadata(inner) => inner.into(),
+            amane_core::PreviewError::Plans(inner) => {
+                tracing::error!(%inner, "读取整理登记失败");
+                Self::Internal("读取整理登记失败".to_owned())
+            }
+        }
+    }
+}
+
 impl From<amane_core::LibraryError> for ApiError {
     fn from(error: amane_core::LibraryError) -> Self {
         match error {

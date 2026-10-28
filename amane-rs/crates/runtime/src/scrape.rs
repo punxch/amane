@@ -11,7 +11,6 @@ use tracing::Instrument;
 
 use amane_crawlers::{Capability, Registry, ScrapedMetadata, SourceError, aggregate};
 
-/// 刮削任务的载荷.
 /// 把刮削任务接到来源登记表上.
 ///
 /// 来源并行请求, 结果按登记顺序聚合: 标量取首个非空, 列表整份取首个非空来源.

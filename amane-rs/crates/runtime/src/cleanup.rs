@@ -7,7 +7,6 @@ use amane_core::{
 };
 use async_trait::async_trait;
 
-/// 清理任务的载荷.
 /// 把清理任务接到库登记上.
 pub struct CleanupHandler {
     libraries: LibraryRepository,
