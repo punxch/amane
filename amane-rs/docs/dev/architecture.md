@@ -53,6 +53,7 @@
 - WAL 与 `synchronous = NORMAL`: 读不阻塞写, 进程崩溃可能丢最后若干事务, 但不损坏库。
 - 迁移经 `sqlx::migrate!` 在启动期自动应用; `migrations/` 只新增文件, 已应用的迁移不修改。
 - 时间列以 UTC 存储, 由 `chrono::DateTime<Utc>` 与 TEXT 互转。
+- JSON 列经 `sqlx::types::Json` 读写, 类型分别是 `FieldSources` 与 `ScrapedMetadata`; 调用方拿不到裸字符串, 结构变化由编译器发现。内容损坏时解码报错并指出列名, 不静默当作空值。
 
 ## 资源
 

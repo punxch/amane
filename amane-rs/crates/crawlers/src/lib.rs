@@ -8,6 +8,8 @@ pub mod dmm;
 pub mod javdb;
 
 pub use aggregate::{Aggregated, aggregate};
+/// 来源返回的元数据由内核定义: 分站快照要按同一份结构落库.
+pub use amane_core::ScrapedMetadata;
 pub use dmm::DmmSource;
 pub use javdb::JavdbSource;
 
@@ -17,7 +19,6 @@ use std::sync::RwLock;
 use amane_core::MediaNumber;
 use amane_net::WebClient;
 use async_trait::async_trait;
-use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -40,22 +41,6 @@ pub struct SourceDescriptor {
     pub label: &'static str,
     pub base_url: &'static str,
     pub capabilities: &'static [Capability],
-}
-
-/// 单个来源抓到的影片元数据. 字段全部可选: 来源之间的覆盖范围不同.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ScrapedMetadata {
-    pub title: Option<String>,
-    pub plot: Option<String>,
-    pub release_date: Option<NaiveDate>,
-    pub runtime_minutes: Option<i32>,
-    pub maker: Option<String>,
-    pub label: Option<String>,
-    pub series: Option<String>,
-    pub directors: Vec<String>,
-    pub actors: Vec<String>,
-    pub tags: Vec<String>,
-    pub poster_url: Option<String>,
 }
 
 /// 上游返回的原文.

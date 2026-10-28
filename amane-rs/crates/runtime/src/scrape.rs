@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use amane_core::{
-    LockableField, MediaNumber, MetadataInput, MetadataRepository, ScrapeWrite, TaskContext,
-    TaskError, TaskHandler, TaskKind, TaskLogger, TaskOutcome,
+    LockableField, MediaNumber, MetadataInput, MetadataRepository, ScrapeWrite,
+    SourceSnapshotInput, TaskContext, TaskError, TaskHandler, TaskKind, TaskLogger, TaskOutcome,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -142,12 +142,11 @@ impl TaskHandler for ScrapeHandler {
         }
 
         // 快照与字段来源用于回溯: 某个字段是从哪个来源来的, 以及各来源当时返回了什么.
-        let snapshots: Vec<(String, String)> = hits
+        let snapshots: Vec<SourceSnapshotInput<'_>> = hits
             .iter()
-            .filter_map(|(id, scraped)| {
-                serde_json::to_string(scraped)
-                    .ok()
-                    .map(|payload| ((*id).to_owned(), payload))
+            .map(|(id, scraped)| SourceSnapshotInput {
+                source_id: id,
+                payload: scraped.clone(),
             })
             .collect();
         self.metadata

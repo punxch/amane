@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
+use sqlx::types::Json;
 use sqlx::{FromRow, QueryBuilder, Sqlite, SqliteConnection};
 use thiserror::Error;
 
@@ -58,13 +59,85 @@ pub struct Metadata {
     pub poster_url: Option<String>,
     /// 海报存到本地后的资源标识; 为 `None` 时详情页只能引用远端地址.
     pub poster_resource_id: Option<i64>,
-    /// 字段来源表, JSON 文本; 键是字段名, 值是来源标识.
-    pub field_sources: Option<String>,
+    /// 字段来源表; 键是字段名, 值是来源标识.
+    pub field_sources: Option<Json<FieldSources>>,
     /// 用户备注, 只有人工写入.
     pub note: Option<String>,
     pub content_type: ContentType,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// 字段来源表: 键是字段名, 值是贡献该字段的来源标识.
+///
+/// 单独成类型而不是裸 `BTreeMap`: 落库形态与人工修订标记 (`manual`) 都挂在这里,
+/// 读写两端拿到的始终是同一份结构.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct FieldSources(BTreeMap<String, String>);
+
+impl FieldSources {
+    pub fn get(&self, field: &str) -> Option<&String> {
+        self.0.get(field)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// 写入一个字段的来源; 被锁定的字段保持原来源.
+    fn merge(&mut self, updates: &BTreeMap<String, String>, locked: &BTreeSet<LockableField>) {
+        for (field, source) in updates {
+            let blocked = LockableField::parse(field).is_some_and(|field| locked.contains(&field));
+            if !blocked {
+                self.0.insert(field.clone(), source.clone());
+            }
+        }
+    }
+
+    /// 按字段读取来源; 供详情视图逐字段展示.
+    pub fn to_map(&self) -> BTreeMap<String, String> {
+        self.0.clone()
+    }
+}
+
+impl From<BTreeMap<String, String>> for FieldSources {
+    fn from(value: BTreeMap<String, String>) -> Self {
+        Self(value)
+    }
+}
+
+/// 一个来源在某一时刻返回的元数据快照.
+///
+/// 存的是来源自己的结果, 不是聚合后的条目: 字段溯源要能回答「当时这个来源说了什么」.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ScrapedMetadata {
+    pub title: Option<String>,
+    pub plot: Option<String>,
+    pub release_date: Option<NaiveDate>,
+    pub runtime_minutes: Option<i32>,
+    pub maker: Option<String>,
+    pub label: Option<String>,
+    pub series: Option<String>,
+    pub directors: Vec<String>,
+    pub actors: Vec<String>,
+    pub tags: Vec<String>,
+    pub poster_url: Option<String>,
+}
+
+/// 一条分站快照行.
+#[derive(Debug, Clone, FromRow)]
+pub struct SourceSnapshot {
+    pub source_id: String,
+    pub payload: Json<ScrapedMetadata>,
+    pub fetched_at: DateTime<Utc>,
+}
+
+/// 待写入的一条分站快照.
+#[derive(Debug, Clone)]
+pub struct SourceSnapshotInput<'a> {
+    pub source_id: &'a str,
+    pub payload: ScrapedMetadata,
 }
 
 /// 写入番号条目的字段集合.
@@ -172,22 +245,13 @@ pub struct MetadataPatch<'a> {
 
 /// 合并字段来源: 以既有表为底, 跳过被锁定字段后写入本次来源.
 fn merge_sources(
-    existing: Option<&str>,
+    existing: Option<&FieldSources>,
     updates: &BTreeMap<String, String>,
     locked: &BTreeSet<LockableField>,
-) -> Result<String, RepositoryError> {
-    let mut merged: BTreeMap<String, String> = existing
-        .and_then(|raw| serde_json::from_str(raw).ok())
-        .unwrap_or_default();
-
-    for (field, source) in updates {
-        let blocked = LockableField::parse(field).is_some_and(|field| locked.contains(&field));
-        if !blocked {
-            merged.insert(field.clone(), source.clone());
-        }
-    }
-
-    serde_json::to_string(&merged).map_err(|error| RepositoryError::InvalidInput(error.to_string()))
+) -> FieldSources {
+    let mut merged = existing.cloned().unwrap_or_default();
+    merged.merge(updates, locked);
+    merged
 }
 
 /// 写入或更新一行, 调用方负责事务边界.
@@ -382,11 +446,15 @@ impl MetadataRepository {
         let row = upsert_row(&mut transaction, write.number, &effective).await?;
 
         // 字段来源按字段合并: 锁定字段保留原来源, 其余字段采用本次命中的来源.
-        let encoded = merge_sources(row.field_sources.as_deref(), &write.field_sources, &locks)?;
+        let encoded = merge_sources(
+            row.field_sources.as_ref().map(|json| &json.0),
+            &write.field_sources,
+            &locks,
+        );
         let row = sqlx::query_as::<_, Metadata>(
             "UPDATE metadata SET field_sources = ?1 WHERE id = ?2 RETURNING *",
         )
-        .bind(encoded)
+        .bind(Json(&encoded))
         .bind(row.id)
         .fetch_one(&mut *transaction)
         .await?;
@@ -552,7 +620,7 @@ impl MetadataRepository {
         patch: &MetadataPatch<'_>,
     ) -> Result<Metadata, RepositoryError> {
         let mut transaction = self.database.write().begin().await?;
-        let existing: Option<(i64, Option<String>)> =
+        let existing: Option<(i64, Option<Json<FieldSources>>)> =
             sqlx::query_as("SELECT id, field_sources FROM metadata WHERE number = ?1")
                 .bind(number.as_str())
                 .fetch_optional(&mut *transaction)
@@ -652,11 +720,15 @@ impl MetadataRepository {
                 .await?;
             }
 
-            let encoded = merge_sources(existing_sources.as_deref(), &updates, &BTreeSet::new())?;
+            let encoded = merge_sources(
+                existing_sources.as_ref().map(|json| &json.0),
+                &updates,
+                &BTreeSet::new(),
+            );
             row = sqlx::query_as::<_, Metadata>(
                 "UPDATE metadata SET field_sources = ?1 WHERE id = ?2 RETURNING *",
             )
-            .bind(encoded)
+            .bind(Json(&encoded))
             .bind(metadata_id)
             .fetch_one(&mut *transaction)
             .await?;
@@ -697,7 +769,7 @@ impl MetadataRepository {
     pub async fn replace_snapshots(
         &self,
         metadata_id: i64,
-        snapshots: &[(String, String)],
+        snapshots: &[SourceSnapshotInput<'_>],
     ) -> Result<(), RepositoryError> {
         let mut transaction = self.database.write().begin().await?;
         let now = Utc::now();
@@ -707,13 +779,13 @@ impl MetadataRepository {
             .execute(&mut *transaction)
             .await?;
 
-        for (source_id, payload) in snapshots {
+        for snapshot in snapshots {
             sqlx::query(
                 "INSERT INTO source_snapshot (metadata_id, source_id, payload, fetched_at) VALUES (?1, ?2, ?3, ?4)",
             )
             .bind(metadata_id)
-            .bind(source_id)
-            .bind(payload)
+            .bind(snapshot.source_id)
+            .bind(Json(&snapshot.payload))
             .bind(now)
             .execute(&mut *transaction)
             .await?;
@@ -727,9 +799,10 @@ impl MetadataRepository {
     pub async fn snapshots(
         &self,
         metadata_id: i64,
-    ) -> Result<Vec<(String, String)>, RepositoryError> {
-        let rows = sqlx::query_as::<_, (String, String)>(
-            "SELECT source_id, payload FROM source_snapshot WHERE metadata_id = ?1 ORDER BY source_id ASC",
+    ) -> Result<Vec<SourceSnapshot>, RepositoryError> {
+        let rows = sqlx::query_as::<_, SourceSnapshot>(
+            "SELECT source_id, payload, fetched_at FROM source_snapshot \
+             WHERE metadata_id = ?1 ORDER BY source_id ASC",
         )
         .bind(metadata_id)
         .fetch_all(self.database.read())
@@ -795,7 +868,7 @@ mod tests {
 
     use super::{
         MANUAL_SOURCE, Metadata, MetadataFilter, MetadataInput, MetadataPatch, MetadataRepository,
-        ScrapeWrite,
+        ScrapeWrite, ScrapedMetadata, SourceSnapshotInput,
     };
     use crate::content_type::ContentType;
     use crate::db::Database;
@@ -810,11 +883,104 @@ mod tests {
         (dir, MetadataRepository::new(database))
     }
 
+    /// 同时拿到数据库句柄, 供需要绕过仓储写入原始内容的用例使用.
+    async fn repository_with_database() -> (tempfile::TempDir, MetadataRepository, Database) {
+        let dir = tempfile::tempdir().expect("应创建临时目录");
+        let database = Database::open(&dir.path().join("amane.db"))
+            .await
+            .expect("应打开数据库");
+        (dir, MetadataRepository::new(database.clone()), database)
+    }
+
     fn input<'a>(title: Option<&'a str>, actors: &'a [String]) -> MetadataInput<'a> {
         MetadataInput {
             title,
             actors: Some(actors),
             ..MetadataInput::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn field_sources_round_trip_as_typed_map() {
+        let (_dir, repository) = repository().await;
+        let number = MediaNumber::parse("ABC-001").expect("应解析成功");
+        repository
+            .upsert(&number, &input(None, &[]))
+            .await
+            .expect("应写入成功");
+
+        let applied = repository
+            .apply_scraped(&scrape(&number, "标题"))
+            .await
+            .expect("应写入成功");
+        let sources = applied
+            .row
+            .field_sources
+            .as_ref()
+            .map(|json| json.0.to_map())
+            .expect("应有字段来源");
+
+        assert_eq!(
+            sources.get("title").map(String::as_str),
+            Some("dmm"),
+            "读回的应当是结构化的来源表, 不是待解析的文本"
+        );
+    }
+
+    #[tokio::test]
+    async fn reads_field_sources_written_as_plain_json() {
+        let (_dir, repository, database) = repository_with_database().await;
+        let number = MediaNumber::parse("ABC-001").expect("应解析成功");
+        repository
+            .upsert(&number, &input(None, &[]))
+            .await
+            .expect("应写入成功");
+        // 早期版本直接把 JSON 文本写进列里; 读端必须仍能解出同一份结构.
+        sqlx::query("UPDATE metadata SET field_sources = ?1 WHERE number = ?2")
+            .bind(r#"{"title":"dmm","maker":"javdb"}"#)
+            .bind(number.as_str())
+            .execute(database.write())
+            .await
+            .expect("应写入原始文本");
+
+        let row = repository
+            .find(&number)
+            .await
+            .expect("应查询成功")
+            .expect("应存在");
+        let sources = row
+            .field_sources
+            .as_ref()
+            .map(|json| json.0.to_map())
+            .expect("应有字段来源");
+
+        assert_eq!(sources.get("title").map(String::as_str), Some("dmm"));
+        assert_eq!(sources.get("maker").map(String::as_str), Some("javdb"));
+    }
+
+    #[tokio::test]
+    async fn corrupted_field_sources_surface_as_error() {
+        let (_dir, repository, database) = repository_with_database().await;
+        let number = MediaNumber::parse("ABC-001").expect("应解析成功");
+        repository
+            .upsert(&number, &input(None, &[]))
+            .await
+            .expect("应写入成功");
+        sqlx::query("UPDATE metadata SET field_sources = ?1 WHERE number = ?2")
+            .bind("{not json")
+            .bind(number.as_str())
+            .execute(database.write())
+            .await
+            .expect("应写入原始文本");
+
+        let result = repository.find(&number).await;
+
+        match result {
+            Err(error) => assert!(
+                error.to_string().contains("field_sources"),
+                "错误说明应指出是哪一列, 实际 {error}"
+            ),
+            Ok(_) => panic!("内容损坏时不应静默当作空来源表"),
         }
     }
 
@@ -933,9 +1099,12 @@ mod tests {
                 .upsert(&number, &input)
                 .await
                 .expect("应写入成功");
-            let snapshots: Vec<(String, String)> = sources
+            let snapshots: Vec<SourceSnapshotInput<'_>> = sources
                 .iter()
-                .map(|source| ((*source).to_owned(), "{}".to_owned()))
+                .map(|source| SourceSnapshotInput {
+                    source_id: source,
+                    payload: ScrapedMetadata::default(),
+                })
                 .collect();
             repository
                 .replace_snapshots(row.id, &snapshots)
@@ -1199,10 +1368,10 @@ mod tests {
 
         let locks = repository.locks(row.id).await.expect("应查询成功");
         assert!(locks.contains(&LockableField::Title), "手工修订应同时加锁");
-        let sources: BTreeMap<String, String> = row
+        let sources = row
             .field_sources
-            .as_deref()
-            .map(|raw| serde_json::from_str(raw).expect("应为 JSON"))
+            .as_ref()
+            .map(|json| json.0.to_map())
             .expect("应有字段来源");
         assert_eq!(
             sources.get("title").map(String::as_str),
@@ -1219,11 +1388,11 @@ mod tests {
             Some("人工标题"),
             "重刮不应覆盖人工值"
         );
-        let sources: BTreeMap<String, String> = applied
+        let sources = applied
             .row
             .field_sources
-            .as_deref()
-            .map(|raw| serde_json::from_str(raw).expect("应为 JSON"))
+            .as_ref()
+            .map(|json| json.0.to_map())
             .expect("应有字段来源");
         assert_eq!(
             sources.get("title").map(String::as_str),

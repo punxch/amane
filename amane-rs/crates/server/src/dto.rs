@@ -64,8 +64,8 @@ impl From<Metadata> for MetadataDto {
             sources: Vec::new(),
             field_sources: value
                 .field_sources
-                .as_deref()
-                .and_then(|raw| serde_json::from_str(raw).ok())
+                .as_ref()
+                .map(|json| json.0.to_map())
                 .unwrap_or_default(),
             note: value.note,
             locked_fields: Vec::new(),

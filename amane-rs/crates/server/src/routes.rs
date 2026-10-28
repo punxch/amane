@@ -172,7 +172,7 @@ async fn load_detail(state: &AppState, number: &MediaNumber) -> Result<MetadataD
         .snapshots(dto.id)
         .await?
         .into_iter()
-        .map(|(source_id, _payload)| source_id)
+        .map(|snapshot| snapshot.source_id)
         .collect();
     dto.tags = state.runtime.metadata.tags(dto.id).await?;
     let locks = state.runtime.metadata.locks(dto.id).await?;
