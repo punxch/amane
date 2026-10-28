@@ -14,12 +14,13 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 
 use crate::dto::{
-    ConfigState, ContentTypeOption, CreateLibraryRequest, CreateMetadataRequest,
-    CreateScheduleRequest, CreateTaskRequest, ExtractedNumber, FilterOptions, HealthResponse,
-    LibraryCountsDto, LibraryDto, LibraryFileDto, LibraryFilePage, LibraryFileQuery, LibraryPage,
-    ListQuery, LockRequest, MetadataDto, MetadataPage, OrganizeExecuteRequest, OrganizePreviewDto,
-    PreviewItemDto, ScheduleDto, SchedulePage, SettingsDto, SourceOption, TagRequest, TaskDto,
-    TaskListQuery, TaskLogEntry, TaskLogPage, TaskPage, UpdateMetadataRequest,
+    CleanupItemDto, CleanupManifestDto, ConfigState, ContentTypeOption, CreateLibraryRequest,
+    CreateMetadataRequest, CreateScheduleRequest, CreateTaskRequest, ExtractedNumber,
+    FilterOptions, HealthResponse, LibraryCountsDto, LibraryDto, LibraryFileDto, LibraryFilePage,
+    LibraryFileQuery, LibraryPage, ListQuery, LockRequest, MetadataDto, MetadataPage,
+    OrganizeExecuteRequest, OrganizePreviewDto, PreviewItemDto, RestoreRequest, ScheduleDto,
+    SchedulePage, SettingsDto, SourceOption, TagRequest, TaskDto, TaskListQuery, TaskLogEntry,
+    TaskLogPage, TaskPage, TrashItemDto, TrashPageDto, UpdateMetadataRequest,
     UpdateScheduleRequest,
 };
 use crate::error::{ApiError, ErrorBody};
@@ -73,6 +74,10 @@ pub fn router() -> Router<AppState> {
         .route("/libraries/{id}/files", get(list_library_files))
         .route("/libraries/{id}/organize/preview", post(organize_preview))
         .route("/libraries/{id}/organize/execute", post(organize_execute))
+        .route("/libraries/{id}/cleanup", get(cleanup_manifest))
+        .route("/libraries/{id}/cleanup/execute", post(cleanup_execute))
+        .route("/libraries/{id}/trash", get(trash_listing))
+        .route("/libraries/{id}/trash/restore", post(trash_restore))
 }
 
 #[utoipa::path(get, path = "/api/health", tag = "system", responses((status = 200, body = HealthResponse), (status = 401, body = crate::error::ErrorBody)))]
@@ -1262,4 +1267,215 @@ pub async fn organize_execute(
         .map_err(map_task_error)?;
 
     Ok((StatusCode::ACCEPTED, Json(TaskDto::from(task))))
+}
+
+/// 清理清单: 无效文件与系统产物, 带大小与命中原因. 只读, 不直接删除.
+#[utoipa::path(
+    get,
+    path = "/api/libraries/{id}/cleanup",
+    tag = "library",
+    params(("id" = i64, Path, description = "媒体库标识")),
+    responses(
+        (status = 200, body = CleanupManifestDto),
+        (status = 404, body = crate::error::ErrorBody),
+        (status = 401, body = crate::error::ErrorBody)
+    )
+)]
+pub async fn cleanup_manifest(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Json<CleanupManifestDto>, ApiError> {
+    let root = state
+        .runtime
+        .libraries
+        .find(id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound {
+            what: format!("媒体库 {id} 不存在"),
+        })?;
+    let (_, index) = state
+        .runtime
+        .libraries
+        .files(id, None, MAX_LIMIT, 0)
+        .await?;
+    let items = amane_core::build_cleanup_manifest(&index, &root.path_buf());
+    let total_size = items.iter().map(|item| item.size).sum();
+
+    Ok(Json(CleanupManifestDto {
+        items: items
+            .into_iter()
+            .map(|item| CleanupItemDto {
+                path: item.path,
+                size: item.size,
+                reason: item.reason,
+            })
+            .collect(),
+        total_size,
+    }))
+}
+
+/// 派生清理任务. 清单在任务内重建, 空清单不动任何文件.
+#[utoipa::path(
+    post,
+    path = "/api/libraries/{id}/cleanup/execute",
+    tag = "library",
+    params(("id" = i64, Path, description = "媒体库标识")),
+    responses(
+        (status = 202, body = TaskDto),
+        (status = 404, body = crate::error::ErrorBody),
+        (status = 401, body = crate::error::ErrorBody)
+    )
+)]
+pub async fn cleanup_execute(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<(StatusCode, Json<TaskDto>), ApiError> {
+    if state.runtime.libraries.find(id).await?.is_none() {
+        return Err(ApiError::NotFound {
+            what: format!("媒体库 {id} 不存在"),
+        });
+    }
+
+    let task = state
+        .runtime
+        .tasks
+        .submit(amane_core::TaskSpec::new(
+            amane_core::TaskKind::Cleanup,
+            serde_json::json!({ "library_id": id }),
+        ))
+        .await
+        .map_err(map_task_error)?;
+
+    Ok((StatusCode::ACCEPTED, Json(TaskDto::from(task))))
+}
+
+/// 回收目录的内容与占用.
+#[utoipa::path(
+    get,
+    path = "/api/libraries/{id}/trash",
+    tag = "library",
+    params(("id" = i64, Path, description = "媒体库标识")),
+    responses(
+        (status = 200, body = TrashPageDto),
+        (status = 404, body = crate::error::ErrorBody),
+        (status = 401, body = crate::error::ErrorBody)
+    )
+)]
+pub async fn trash_listing(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Json<TrashPageDto>, ApiError> {
+    let root = state
+        .runtime
+        .libraries
+        .find(id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound {
+            what: format!("媒体库 {id} 不存在"),
+        })?;
+
+    // 遍历是纯阻塞 IO, 交给阻塞线程池.
+    let root_path = root.path_buf();
+    let items = tokio::task::spawn_blocking(move || amane_core::list_trash(&root_path))
+        .await
+        .map_err(|error| ApiError::Internal(format!("读取回收目录失败: {error}")))?;
+    let total_size = amane_core::trash_total_size(&items);
+
+    Ok(Json(TrashPageDto {
+        items: items
+            .into_iter()
+            .map(|item| TrashItemDto {
+                path: item.path,
+                size: item.size,
+            })
+            .collect(),
+        total_size,
+    }))
+}
+
+/// 把回收目录里的一个文件恢复到原路径. 目标已存在时拒绝而不覆盖.
+#[utoipa::path(
+    post,
+    path = "/api/libraries/{id}/trash/restore",
+    tag = "library",
+    params(("id" = i64, Path, description = "媒体库标识")),
+    request_body = RestoreRequest,
+    responses(
+        (status = 200, body = TrashPageDto),
+        (status = 400, body = crate::error::ErrorBody),
+        (status = 404, body = crate::error::ErrorBody),
+        (status = 409, body = crate::error::ErrorBody),
+        (status = 401, body = crate::error::ErrorBody)
+    )
+)]
+pub async fn trash_restore(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(payload): Json<RestoreRequest>,
+) -> Result<Json<TrashPageDto>, ApiError> {
+    let root = state
+        .runtime
+        .libraries
+        .find(id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound {
+            what: format!("媒体库 {id} 不存在"),
+        })?;
+
+    // 路径遍历防御: 相对路径不得逃出回收目录映射.
+    if payload.path.contains("..") {
+        return Err(ApiError::Invalid {
+            code: "invalid_path",
+            message: "路径不得包含 ..".to_owned(),
+        });
+    }
+
+    let root_path = root.path_buf();
+    let relative = payload.path.clone();
+    let restored =
+        tokio::task::spawn_blocking(move || amane_core::restore_from_trash(&root_path, &relative))
+            .await
+            .map_err(|error| ApiError::Internal(format!("恢复线程异常退出: {error}")))?
+            .map_err(|error| match error {
+                amane_core::organize::RestoreError::TargetExists(path) => ApiError::Conflict {
+                    message: format!("原路径 {path} 已存在文件, 恢复被拒绝"),
+                },
+                amane_core::organize::RestoreError::NotFound(path) => ApiError::NotFound {
+                    what: format!("回收目录中不存在 {path}"),
+                },
+                other => ApiError::Invalid {
+                    code: "restore_failed",
+                    message: other.to_string(),
+                },
+            })?;
+
+    tracing::info!(library = id, path = %restored, "回收文件已恢复");
+
+    // 恢复后的文件重新进入扫描索引 (按未识别登记); 重新扫描会重新归类.
+    state
+        .runtime
+        .libraries
+        .insert_file(
+            id,
+            &amane_core::LibraryFile::new(&restored, amane_core::ScanKind::Unrecognized),
+        )
+        .await?;
+
+    // 恢复后回显回收目录现状, 界面无需二次刷新.
+    let root_path = root.path_buf();
+    let items = tokio::task::spawn_blocking(move || amane_core::list_trash(&root_path))
+        .await
+        .map_err(|error| ApiError::Internal(format!("读取回收目录失败: {error}")))?;
+    let total_size = amane_core::trash_total_size(&items);
+
+    Ok(Json(TrashPageDto {
+        items: items
+            .into_iter()
+            .map(|item| TrashItemDto {
+                path: item.path,
+                size: item.size,
+            })
+            .collect(),
+        total_size,
+    }))
 }

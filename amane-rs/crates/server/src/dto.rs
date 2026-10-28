@@ -561,3 +561,42 @@ pub struct OrganizeExecuteRequest {
     #[serde(default)]
     pub choices: std::collections::HashMap<String, String>,
 }
+
+/// 清理清单. 只读: 展示待删文件、大小与命中原因, 不直接删除.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CleanupManifestDto {
+    pub items: Vec<CleanupItemDto>,
+    /// 待删文件的总字节数.
+    pub total_size: u64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CleanupItemDto {
+    /// 相对库根的路径.
+    pub path: String,
+    pub size: u64,
+    /// 命中的规则说明.
+    pub reason: String,
+}
+
+/// 回收目录的内容与占用.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TrashPageDto {
+    pub items: Vec<TrashItemDto>,
+    /// 回收目录的总占用 (字节).
+    pub total_size: u64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TrashItemDto {
+    /// 相对回收目录的路径, 即原相对路径.
+    pub path: String,
+    pub size: u64,
+}
+
+/// 恢复请求.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct RestoreRequest {
+    /// 相对回收目录的路径.
+    pub path: String,
+}

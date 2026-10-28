@@ -57,6 +57,10 @@ pub use state::{AppState, Runtime};
         routes::list_library_files,
         routes::organize_preview,
         routes::organize_execute,
+        routes::cleanup_manifest,
+        routes::cleanup_execute,
+        routes::trash_listing,
+        routes::trash_restore,
     ),
     components(schemas(
         dto::MetadataDto,
@@ -93,6 +97,11 @@ pub use state::{AppState, Runtime};
         dto::OrganizePreviewDto,
         dto::PreviewItemDto,
         dto::OrganizeExecuteRequest,
+        dto::CleanupManifestDto,
+        dto::CleanupItemDto,
+        dto::TrashPageDto,
+        dto::TrashItemDto,
+        dto::RestoreRequest,
         error::ErrorBody,
     ))
 )]
@@ -1527,6 +1536,200 @@ mod tests {
         worker.abort();
     }
 
+    /// 清理与回收端到端: 清单 → 执行 → 回收列表 → 恢复 → 目标已存在 409.
+    #[tokio::test]
+    async fn cleanup_and_restore_round_trip() {
+        let (dir, app, state) = app_state(None).await;
+        let worker = state.runtime.tasks.start();
+
+        let library = dir.path().join("library");
+        std::fs::create_dir_all(&library).expect("应创建库目录");
+        std::fs::write(library.join("ads.mp4"), vec![0u8; 128]).expect("应写入无效文件");
+        let payload = serde_json::json!({ "path": library.display().to_string() });
+        let (_, created) = call(
+            app.clone(),
+            Method::POST,
+            "/api/libraries",
+            Some(&serde_json::to_string(&payload).expect("应序列化")),
+        )
+        .await;
+        let id = created["id"].as_i64().expect("应带标识");
+
+        use amane_core::LibraryFile;
+        state
+            .runtime
+            .libraries
+            .replace_files(
+                id,
+                &[
+                    LibraryFile::unwanted(
+                        "ads.mp4",
+                        amane_core::UnwantedRule::Blacklist,
+                        "(?i)ads".to_owned(),
+                    ),
+                    LibraryFile::new("film.mp4", amane_core::ScanKind::Media),
+                ],
+                &[],
+            )
+            .await
+            .expect("应写入索引");
+        std::fs::write(library.join("film.mp4"), vec![0u8; 64]).expect("应写入媒体");
+
+        // 清单: 一项, 带大小与原因.
+        let (_, manifest) = call(
+            app.clone(),
+            Method::GET,
+            &format!("/api/libraries/{id}/cleanup"),
+            None,
+        )
+        .await;
+        assert_eq!(
+            manifest["items"].as_array().expect("items 应为数组").len(),
+            1
+        );
+        assert_eq!(manifest["items"][0]["path"], "ads.mp4");
+        assert_eq!(manifest["items"][0]["size"], 128);
+        assert_eq!(manifest["items"][0]["reason"], "blacklist: (?i)ads");
+        assert_eq!(manifest["total_size"], 128);
+
+        // 执行清理任务.
+        let (status, task) = call(
+            app.clone(),
+            Method::POST,
+            &format!("/api/libraries/{id}/cleanup/execute"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        let task_id = task["id"].as_i64().expect("应带任务标识");
+        let mut settled = serde_json::Value::Null;
+        for _ in 0..200 {
+            let (_, current) = call(
+                app.clone(),
+                Method::GET,
+                &format!("/api/tasks/{task_id}"),
+                None,
+            )
+            .await;
+            if current["status"] == "done" || current["status"] == "failed" {
+                settled = current;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            settled["status"], "done",
+            "清理应成功: {}",
+            settled["error"]
+        );
+
+        // 原路径不再存在; 回收目录里可查, 占用可统计.
+        assert!(!library.join("ads.mp4").exists());
+        let (_, trash) = call(
+            app.clone(),
+            Method::GET,
+            &format!("/api/libraries/{id}/trash"),
+            None,
+        )
+        .await;
+        assert_eq!(trash["items"][0]["path"], "ads.mp4");
+        assert_eq!(trash["items"][0]["size"], 128);
+        assert_eq!(trash["total_size"], 128);
+
+        // 恢复: 文件回到原路径, 回收目录清空.
+        let (_, restored) = call(
+            app.clone(),
+            Method::POST,
+            &format!("/api/libraries/{id}/trash/restore"),
+            Some(r#"{"path": "ads.mp4"}"#),
+        )
+        .await;
+        assert_eq!(
+            restored["items"].as_array().expect("items 应为数组").len(),
+            0,
+            "恢复后回收目录应清空"
+        );
+        assert!(library.join("ads.mp4").exists());
+
+        // 再次清理后制造原路径占用: 恢复被拒绝, 409 说明原因且不覆盖.
+        // 恢复回来的条目按未识别登记 (原始归类随清理删除); 重新扫描后再次归入清理清单.
+        // 这里直接模拟重扫结果: ads.mp4 又被黑名单命中, 然后派生第二次清理.
+        state
+            .runtime
+            .libraries
+            .replace_files(
+                id,
+                &[
+                    LibraryFile::unwanted(
+                        "ads.mp4",
+                        amane_core::UnwantedRule::Blacklist,
+                        "(?i)ads".to_owned(),
+                    ),
+                    LibraryFile::new("film.mp4", amane_core::ScanKind::Media),
+                ],
+                &[],
+            )
+            .await
+            .expect("应重写索引");
+        let (_, task) = call(
+            app.clone(),
+            Method::POST,
+            &format!("/api/libraries/{id}/cleanup/execute"),
+            None,
+        )
+        .await;
+        let task_id = task["id"].as_i64().expect("应带任务标识");
+        for _ in 0..200 {
+            let (_, current) = call(
+                app.clone(),
+                Method::GET,
+                &format!("/api/tasks/{task_id}"),
+                None,
+            )
+            .await;
+            if current["status"] == "done" || current["status"] == "failed" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            !library.join("ads.mp4").exists(),
+            "第二次清理应把文件移入回收目录"
+        );
+        std::fs::write(library.join("ads.mp4"), b"occupied").expect("应写入占用者");
+        let (status, body) = call(
+            app.clone(),
+            Method::POST,
+            &format!("/api/libraries/{id}/trash/restore"),
+            Some(r#"{"path": "ads.mp4"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("已存在"),
+            "应说明原因, 实际 {}",
+            body["message"]
+        );
+        assert!(library.join("ads.mp4").exists(), "占用者不得被覆盖");
+
+        // 路径遍历防御.
+        let (status, body) = call(
+            app.clone(),
+            Method::POST,
+            &format!("/api/libraries/{id}/trash/restore"),
+            Some(r#"{"path": "../../etc/passwd"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["code"], "invalid_path");
+
+        state.runtime.tasks.shutdown();
+        worker.abort();
+    }
+
     #[test]
     fn openapi_lists_every_route() {
         let document = super::openapi();
@@ -1558,6 +1761,10 @@ mod tests {
             "/api/libraries/{id}/files",
             "/api/libraries/{id}/organize/preview",
             "/api/libraries/{id}/organize/execute",
+            "/api/libraries/{id}/cleanup",
+            "/api/libraries/{id}/cleanup/execute",
+            "/api/libraries/{id}/trash",
+            "/api/libraries/{id}/trash/restore",
         ] {
             assert!(paths.contains_key(expected), "缺少路径 {expected}");
         }

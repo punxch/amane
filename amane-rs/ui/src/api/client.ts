@@ -32,6 +32,8 @@ export type LibraryPage = Schemas["LibraryPage"];
 export type LibraryFilePage = Schemas["LibraryFilePage"];
 export type CreateLibraryRequest = Schemas["CreateLibraryRequest"];
 export type OrganizePreviewDto = Schemas["OrganizePreviewDto"];
+export type CleanupManifestDto = Schemas["CleanupManifestDto"];
+export type TrashPageDto = Schemas["TrashPageDto"];
 
 /** 保存配置的请求体; 字段与 `Settings` 一致, 由后端拒绝未知取值. */
 export interface ConfigBody {
@@ -234,5 +236,20 @@ export const api = {
     request(`/api/libraries/${id}/organize/execute`, {
       method: "POST",
       body: JSON.stringify({ choices }),
+    }),
+
+  cleanupManifest: (id: number): Promise<CleanupManifestDto> =>
+    request(`/api/libraries/${id}/cleanup`),
+
+  cleanupExecute: (id: number): Promise<TaskDto> =>
+    request(`/api/libraries/${id}/cleanup/execute`, { method: "POST" }),
+
+  trashListing: (id: number): Promise<TrashPageDto> =>
+    request(`/api/libraries/${id}/trash`),
+
+  trashRestore: (id: number, path: string): Promise<TrashPageDto> =>
+    request(`/api/libraries/${id}/trash/restore`, {
+      method: "POST",
+      body: JSON.stringify({ path }),
     }),
 };

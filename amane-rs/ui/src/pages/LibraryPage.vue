@@ -4,9 +4,11 @@ import { onMounted, reactive, ref } from "vue";
 import {
   ApiError,
   api,
+  type CleanupManifestDto,
   type LibraryDto,
   type LibraryFilePage,
   type OrganizePreviewDto,
+  type TrashPageDto,
 } from "@/api/client";
 import Button from "@/components/ui/Button.vue";
 
@@ -44,6 +46,16 @@ const preview = ref<OrganizePreviewDto | null>(null);
 const previewLibrary = ref<number | null>(null);
 const previewLoading = ref(false);
 const executing = ref(false);
+
+/** 清理清单与回收目录. 清单为空时执行入口不可用. */
+const cleanup = ref<CleanupManifestDto | null>(null);
+const cleanupLibrary = ref<number | null>(null);
+const cleanupLoading = ref(false);
+const cleaningUp = ref(false);
+const trash = ref<TrashPageDto | null>(null);
+const trashLibrary = ref<number | null>(null);
+const trashLoading = ref(false);
+const restoring = ref<string | null>(null);
 
 function conflictLabel(kind: string): string {
   return CONFLICT_LABELS[kind] ?? kind;
@@ -187,6 +199,83 @@ async function execute(library: LibraryDto, action: string): Promise<void> {
   }
 }
 
+function formatSize(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  if (bytes < 1024 * 1024 * 1024) {
+    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  }
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+async function loadCleanup(library: LibraryDto): Promise<void> {
+  if (cleanupLibrary.value === library.id) {
+    cleanupLibrary.value = null;
+    cleanup.value = null;
+    return;
+  }
+  cleanupLibrary.value = library.id;
+  cleanupLoading.value = true;
+  cleanup.value = null;
+  try {
+    cleanup.value = await api.cleanupManifest(library.id);
+  } catch (error) {
+    report("error", describe(error));
+    cleanupLibrary.value = null;
+  } finally {
+    cleanupLoading.value = false;
+  }
+}
+
+async function runCleanup(library: LibraryDto): Promise<void> {
+  cleaningUp.value = true;
+  try {
+    const task = await api.cleanupExecute(library.id);
+    report("ok", `清理任务 #${task.id} 已提交，完成后刷新查看结果`);
+    cleanup.value = null;
+    cleanupLibrary.value = null;
+  } catch (error) {
+    report("error", describe(error));
+  } finally {
+    cleaningUp.value = false;
+  }
+}
+
+async function loadTrash(library: LibraryDto): Promise<void> {
+  if (trashLibrary.value === library.id) {
+    trashLibrary.value = null;
+    trash.value = null;
+    return;
+  }
+  trashLibrary.value = library.id;
+  trashLoading.value = true;
+  trash.value = null;
+  try {
+    trash.value = await api.trashListing(library.id);
+  } catch (error) {
+    report("error", describe(error));
+    trashLibrary.value = null;
+  } finally {
+    trashLoading.value = false;
+  }
+}
+
+async function restore(library: LibraryDto, path: string): Promise<void> {
+  restoring.value = path;
+  try {
+    trash.value = await api.trashRestore(library.id, path);
+    report("ok", `已恢复 ${path}`);
+  } catch (error) {
+    report("error", describe(error));
+  } finally {
+    restoring.value = null;
+  }
+}
+
 onMounted(refresh);
 </script>
 
@@ -253,6 +342,18 @@ onMounted(refresh);
               >
                 {{ previewLibrary === library.id && previewLoading ? "预览中" : "整理预览" }}
               </Button>
+              <button
+                class="text-neutral-500 hover:text-neutral-300"
+                @click="loadCleanup(library)"
+              >
+                清理
+              </button>
+              <button
+                class="text-neutral-500 hover:text-neutral-300"
+                @click="loadTrash(library)"
+              >
+                回收站
+              </button>
               <button
                 class="text-neutral-500 hover:text-red-400"
                 @click="remove(library)"
@@ -376,6 +477,88 @@ onMounted(refresh);
                 </div>
                 <p class="mt-1 text-[10px] text-neutral-600">
                   覆盖前旧文件进入库内回收目录，可恢复。
+                </p>
+              </template>
+            </template>
+          </div>
+
+          <div
+            v-if="cleanupLibrary === library.id"
+            class="border-t border-neutral-900 px-4 py-3"
+          >
+            <p v-if="cleanupLoading" class="text-xs text-neutral-500">读取中…</p>
+            <template v-else-if="cleanup">
+              <p
+                v-if="(cleanup.items.length ?? 0) === 0"
+                class="text-xs text-neutral-600"
+              >
+                没有待清理的文件。无效文件与系统产物会出现在这里。
+              </p>
+              <template v-else>
+                <ul class="space-y-1 font-mono text-xs text-neutral-300">
+                  <li
+                    v-for="item in cleanup.items"
+                    :key="item.path"
+                    class="flex flex-wrap items-baseline gap-2"
+                  >
+                    <span class="truncate">{{ item.path }}</span>
+                    <span class="text-neutral-600">{{ formatSize(item.size) }}</span>
+                    <span class="rounded bg-amber-950/60 px-1.5 py-0.5 text-[10px] text-amber-300">
+                      {{ item.reason }}
+                    </span>
+                  </li>
+                </ul>
+                <div class="mt-3 flex items-center gap-3 text-xs">
+                  <Button
+                    variant="ghost"
+                    :disabled="cleaningUp"
+                    @click="runCleanup(library)"
+                  >
+                    {{ cleaningUp ? "提交中" : "确认清理" }}
+                  </Button>
+                  <span class="text-neutral-600">
+                    共 {{ cleanup.items.length }} 项，{{ formatSize(cleanup.total_size) }}
+                  </span>
+                </div>
+                <p class="mt-1 text-[10px] text-neutral-600">
+                  清理的文件进入库内回收目录，可在回收站恢复。
+                </p>
+              </template>
+            </template>
+          </div>
+
+          <div
+            v-if="trashLibrary === library.id"
+            class="border-t border-neutral-900 px-4 py-3"
+          >
+            <p v-if="trashLoading" class="text-xs text-neutral-500">读取中…</p>
+            <template v-else-if="trash">
+              <p
+                v-if="(trash.items.length ?? 0) === 0"
+                class="text-xs text-neutral-600"
+              >
+                回收目录是空的。
+              </p>
+              <template v-else>
+                <ul class="space-y-1 font-mono text-xs text-neutral-300">
+                  <li
+                    v-for="item in trash.items"
+                    :key="item.path"
+                    class="flex flex-wrap items-baseline gap-2"
+                  >
+                    <span class="truncate">{{ item.path }}</span>
+                    <span class="text-neutral-600">{{ formatSize(item.size) }}</span>
+                    <button
+                      class="text-neutral-500 hover:text-emerald-400"
+                      :disabled="restoring !== null"
+                      @click="restore(library, item.path)"
+                    >
+                      {{ restoring === item.path ? "恢复中" : "恢复" }}
+                    </button>
+                  </li>
+                </ul>
+                <p class="mt-3 text-xs text-neutral-600">
+                  回收目录占用：{{ formatSize(trash.total_size) }}。目标已存在时恢复会被拒绝。
                 </p>
               </template>
             </template>

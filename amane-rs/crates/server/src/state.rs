@@ -11,7 +11,7 @@ use amane_core::{
 };
 use amane_crawlers::Registry;
 use amane_net::{Rate, RateLimiters, WebClient};
-use amane_runtime::{OrganizeHandler, ResourceStore, ScanHandler, ScrapeHandler};
+use amane_runtime::{CleanupHandler, OrganizeHandler, ResourceStore, ScanHandler, ScrapeHandler};
 
 /// 启动失败的原因.
 #[derive(Debug, thiserror::Error)]
@@ -100,6 +100,7 @@ impl Runtime {
                 organize.clone(),
                 Arc::clone(&settings),
             ),
+            CleanupHandler::new(libraries.clone()),
         ];
         let tasks = TaskService::new(
             task_repository,

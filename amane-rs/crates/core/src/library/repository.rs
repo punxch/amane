@@ -104,6 +104,42 @@ impl LibraryRepository {
         Ok(())
     }
 
+    /// 从索引删除若干条目; 清理执行后调用, 让索引与磁盘保持一致.
+    pub async fn delete_files(&self, root_id: i64, paths: &[String]) -> Result<u64, LibraryError> {
+        let mut affected = 0u64;
+        let mut transaction = self.database.write().begin().await?;
+        for path in paths {
+            let result = sqlx::query("DELETE FROM library_file WHERE root_id = ?1 AND path = ?2")
+                .bind(root_id)
+                .bind(path)
+                .execute(&mut *transaction)
+                .await?;
+            affected += result.rows_affected();
+        }
+        transaction.commit().await?;
+
+        Ok(affected)
+    }
+
+    /// 插入单条索引记录; 已存在同路径条目时保持原样.
+    ///
+    /// 恢复回收文件后调用: 原始归类已随清理删除, 先按未识别登记, 重新扫描再归类.
+    pub async fn insert_file(&self, root_id: i64, file: &LibraryFile) -> Result<(), LibraryError> {
+        sqlx::query(
+            "INSERT OR IGNORE INTO library_file (root_id, path, kind, rule, detail) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )
+        .bind(root_id)
+        .bind(&file.path)
+        .bind(file.kind)
+        .bind(&file.rule)
+        .bind(&file.detail)
+        .execute(self.database.write())
+        .await?;
+
+        Ok(())
+    }
+
     /// 以本次扫描结果整体替换一个根目录的索引, 并给出相对上次的增量.
     ///
     /// 比较按路径进行: 归类规则变了, 已存在的路径也算不上新增.

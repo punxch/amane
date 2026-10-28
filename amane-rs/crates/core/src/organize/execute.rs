@@ -178,8 +178,8 @@ fn same_path(left: &str, right: &str) -> bool {
     normalize(left) == normalize(right) && !normalize(left).is_empty()
 }
 
-/// 旧目标移入 `<root>/.amane_trash/<原相对路径>`.
-fn move_to_trash(root: &Path, target: &Path) -> Result<(), ExecuteError> {
+/// 旧目标移入 `<root>/.amane_trash/<原相对路径>`. 清理切片复用同一目录.
+pub fn move_to_trash(root: &Path, target: &Path) -> Result<(), ExecuteError> {
     let relative = target
         .strip_prefix(root)
         .map(Path::to_path_buf)
