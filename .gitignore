@@ -216,4 +216,5 @@ androidapp/*.keystore
 # code graph index and agent working records created by tooling — never track
 .codegraph/
 .workbuddy/
+.workbuddy-ai/
 .corepack/
