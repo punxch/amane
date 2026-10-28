@@ -17,10 +17,10 @@ use crate::dto::{
     CreateMetadataRequest, CreateScheduleRequest, CreateTaskRequest, ExtractedNumber,
     FilterOptions, HealthResponse, LibraryCountsDto, LibraryDto, LibraryFileDto, LibraryFilePage,
     LibraryFileQuery, LibraryPage, ListQuery, LockRequest, MetadataDto, MetadataPage,
-    OrganizeExecuteRequest, OrganizePreviewDto, PreviewItemDto, RestoreRequest, ScheduleDto,
-    SchedulePage, SettingsDto, SourceOption, TagRequest, TaskDto, TaskListQuery, TaskLogEntry,
-    TaskLogPage, TaskPage, TrashItemDto, TrashPageDto, UpdateConfigRequest, UpdateMetadataRequest,
-    UpdateScheduleRequest,
+    OrganizeExecuteRequest, OrganizePreviewDto, PreviewItemDto, RelatedCounts, RestoreRequest,
+    ScheduleDto, SchedulePage, SettingsDto, SourceOption, TagRequest, TaskDto, TaskListQuery,
+    TaskLogEntry, TaskLogPage, TaskPage, TrashItemDto, TrashPageDto, UpdateConfigRequest,
+    UpdateMetadataRequest, UpdateScheduleRequest,
 };
 use crate::error::{ApiError, ApiJson, ErrorBody};
 use crate::state::AppState;
@@ -46,7 +46,9 @@ pub fn router() -> Router<AppState> {
         .route("/metadata", get(list_metadata).post(create_metadata))
         .route(
             "/metadata/{number}",
-            get(get_metadata).patch(update_metadata),
+            get(get_metadata)
+                .patch(update_metadata)
+                .delete(delete_metadata),
         )
         .route("/metadata/{number}/locks/{field}", put(set_lock))
         .route("/metadata/{number}/tags", post(add_tag))
@@ -182,6 +184,15 @@ async fn load_detail(state: &AppState, number: &MediaNumber) -> Result<MetadataD
         .map(|field| field.as_str().to_owned())
         .collect();
 
+    // 删除前要告诉用户会连带删掉什么, 计数取自上面已经查出来的清单, 不额外查库.
+    dto.related = RelatedCounts {
+        actors: dto.actors.len(),
+        locks: dto.locked_fields.len(),
+        tags: dto.tags.len(),
+        sources: dto.sources.len(),
+        resources: usize::from(dto.poster_local_url.is_some()),
+    };
+
     Ok(dto)
 }
 
@@ -219,6 +230,38 @@ pub async fn update_metadata(
         .await?;
 
     Ok(Json(load_detail(&state, &number).await?))
+}
+
+/// 删除条目.
+///
+/// 关联数据随主行级联删除; 不再被引用的资源文件在事务提交后清理. 顺序反过来会让条目
+/// 指向不存在的文件, 这个顺序最坏只留下一个无主文件.
+#[utoipa::path(
+    delete,
+    path = "/api/metadata/{number}",
+    tag = "metadata",
+    params(("number" = String, Path, description = "番号")),
+    responses(
+        (status = 204, description = "已删除"),
+        (status = 400, body = crate::error::ErrorBody),
+        (status = 404, body = crate::error::ErrorBody),
+        (status = 401, body = crate::error::ErrorBody)
+    )
+)]
+pub async fn delete_metadata(
+    State(state): State<AppState>,
+    Path(number): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let number = MediaNumber::parse(&number)?;
+    let outcome = state.runtime.metadata.delete(&number).await?;
+
+    for resource in &outcome.resources {
+        if let Err(error) = state.runtime.resources.remove_file(resource).await {
+            tracing::warn!(resource = %resource.file_name, %error, "删除资源文件失败");
+        }
+    }
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// 加锁或解锁单个字段.

@@ -40,6 +40,8 @@ pub struct MetadataDto {
     pub genres: Vec<String>,
     /// 逐字段视图; 只有详情端点填充.
     pub fields: Vec<MetadataFieldDto>,
+    /// 删除该条目会连带删除的关联数据; 只有详情端点填充.
+    pub related: RelatedCounts,
     /// 类型, 取值见 `ContentType`.
     pub content_type: String,
     pub created_at: DateTime<Utc>,
@@ -78,6 +80,7 @@ impl From<Metadata> for MetadataDto {
                 .map(|json| json.0.as_slice().to_vec())
                 .unwrap_or_default(),
             fields: Vec::new(),
+            related: RelatedCounts::default(),
             content_type: value.content_type.as_str().to_owned(),
             created_at: value.created_at,
             updated_at: value.updated_at,
@@ -204,6 +207,17 @@ pub struct ListQuery {
     pub q: Option<String>,
     /// 分类名; 取值由 `GET /api/filters` 给出.
     pub genre: Option<String>,
+}
+
+/// 删除条目会连带删除的关联数据条数.
+#[derive(Debug, Default, Serialize, ToSchema)]
+pub struct RelatedCounts {
+    pub actors: usize,
+    pub locks: usize,
+    pub tags: usize,
+    pub sources: usize,
+    /// 关联的本地资源数.
+    pub resources: usize,
 }
 
 /// 筛选可选项. 取值域由服务端给出, 界面不自行维护枚举.

@@ -861,6 +861,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deletes_entry_with_related_data() {
+        let (_dir, app) = app(None).await;
+        call(
+            app.clone(),
+            Method::POST,
+            "/api/metadata",
+            Some(r#"{"number":"ABC-001","title":"标题"}"#),
+        )
+        .await;
+        call(
+            app.clone(),
+            Method::PUT,
+            "/api/metadata/ABC-001/locks/title",
+            Some(r#"{"locked":true}"#),
+        )
+        .await;
+        call(
+            app.clone(),
+            Method::POST,
+            "/api/metadata/ABC-001/tags",
+            Some(r#"{"name":"收藏"}"#),
+        )
+        .await;
+
+        let (_, detail) = call(app.clone(), Method::GET, "/api/metadata/ABC-001", None).await;
+        assert_eq!(detail["related"]["locks"], 1, "删除前应告知关联的锁");
+        assert_eq!(detail["related"]["tags"], 1, "删除前应告知关联的标签");
+
+        let (status, body) = call(app.clone(), Method::DELETE, "/api/metadata/ABC-001", None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert!(body.is_null(), "删除不返回正文");
+
+        let (status, _) = call(app.clone(), Method::GET, "/api/metadata/ABC-001", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "删除后详情应 404");
+
+        let (status, _) = call(app.clone(), Method::DELETE, "/api/metadata/ABC-001", None).await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "重复删除应 404 而不是静默成功"
+        );
+    }
+
+    #[tokio::test]
+    async fn deletes_entry_without_related_data() {
+        let (_dir, app) = app(None).await;
+        call(
+            app.clone(),
+            Method::POST,
+            "/api/metadata",
+            Some(r#"{"number":"ABC-002","title":"标题"}"#),
+        )
+        .await;
+
+        let (_, detail) = call(app.clone(), Method::GET, "/api/metadata/ABC-002", None).await;
+        assert_eq!(detail["related"]["actors"], 0);
+        assert_eq!(detail["related"]["resources"], 0);
+
+        let (status, _) = call(app.clone(), Method::DELETE, "/api/metadata/ABC-002", None).await;
+
+        assert_eq!(status, StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
     async fn genres_are_returned_and_filterable() {
         let (_dir, app, state) = app_state(None).await;
         let number = MediaNumber::parse("ABC-001").expect("应解析成功");

@@ -202,6 +202,43 @@ async function addTag(): Promise<void> {
   }
 }
 
+/** 删除前把会连带删掉的数据列出来; 清单为空时直接确认. */
+function describeRelated(): string {
+  const related = detail.value?.related;
+  if (related === undefined) {
+    return "";
+  }
+  const parts: string[] = [];
+  if (related.actors > 0) parts.push(`演员 ${related.actors}`);
+  if (related.sources > 0) parts.push(`来源快照 ${related.sources}`);
+  if (related.locks > 0) parts.push(`字段锁 ${related.locks}`);
+  if (related.tags > 0) parts.push(`标签 ${related.tags}`);
+  if (related.resources > 0) parts.push(`本地资源 ${related.resources}`);
+  return parts.join("、");
+}
+
+async function removeEntry(): Promise<void> {
+  if (detail.value === null) {
+    return;
+  }
+  const related = describeRelated();
+  const message =
+    related === ""
+      ? `删除 ${detail.value.number}？`
+      : `删除 ${detail.value.number} 会同时删除：${related}。继续？`;
+  if (!window.confirm(message)) {
+    return;
+  }
+  try {
+    await api.deleteMetadata(detail.value.number);
+    detail.value = null;
+    report("ok", "已删除");
+    await load();
+  } catch (error) {
+    report("error", describeError(error));
+  }
+}
+
 async function removeTag(name: string): Promise<void> {
   if (detail.value === null) {
     return;
@@ -452,9 +489,14 @@ onMounted(async () => {
         <section v-if="detail" class="rounded-lg border border-neutral-800/80 p-4">
           <div class="flex items-start justify-between gap-2">
             <h2 class="font-mono text-sm text-neutral-200">{{ detail.number }}</h2>
-            <button class="text-xs text-neutral-600 hover:text-neutral-400" @click="detail = null">
-              关闭
-            </button>
+            <div class="flex items-center gap-3">
+              <button class="text-xs text-red-500 hover:text-red-400" @click="removeEntry">
+                删除
+              </button>
+              <button class="text-xs text-neutral-600 hover:text-neutral-400" @click="detail = null">
+                关闭
+              </button>
+            </div>
           </div>
           <img
             v-if="detail.poster_local_url"

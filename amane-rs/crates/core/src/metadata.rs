@@ -10,6 +10,7 @@ use crate::content_type::ContentType;
 use crate::db::Database;
 use crate::lockable::LockableField;
 use crate::number::MediaNumber;
+use crate::resource::Resource;
 
 /// 列表筛选条件. 各项为空表示不限制, 组合时取交集.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -288,6 +289,31 @@ fn merge_sources(
     let mut merged = existing.cloned().unwrap_or_default();
     merged.merge(updates, locked);
     merged
+}
+
+/// 删除条目的结果: 连带删掉的关联数据条数, 以及需要调用方清理的文件.
+#[derive(Debug, Clone, Default)]
+pub struct DeleteOutcome {
+    pub actors: i64,
+    pub locks: i64,
+    pub tags: i64,
+    pub snapshots: i64,
+    /// 删除后不再被任何条目引用的资源; 文件由调用方删除.
+    pub resources: Vec<Resource>,
+}
+
+/// 数一张子表里属于该条目的行数. 表名来自本文件内的固定字面量.
+async fn count_related(
+    transaction: &mut sqlx::Transaction<'_, Sqlite>,
+    table: &str,
+    metadata_id: i64,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(&format!(
+        "SELECT COUNT(*) FROM {table} WHERE metadata_id = ?1"
+    ))
+    .bind(metadata_id)
+    .fetch_one(&mut **transaction)
+    .await
 }
 
 /// 写入或更新一行, 调用方负责事务边界.
@@ -852,6 +878,63 @@ impl MetadataRepository {
         Ok(rows.into_iter().map(|(value,)| value).collect())
     }
 
+    /// 删除条目与全部关联数据.
+    ///
+    /// 只处理库: 资源文件由调用方在事务提交后删除. 反过来的顺序会让条目指向不存在的文件,
+    /// 而这个顺序最坏只留下一个无主文件.
+    pub async fn delete(&self, number: &MediaNumber) -> Result<DeleteOutcome, RepositoryError> {
+        let mut transaction = self.database.write().begin().await?;
+
+        let existing: Option<(i64, Option<i64>)> =
+            sqlx::query_as("SELECT id, poster_resource_id FROM metadata WHERE number = ?1")
+                .bind(number.as_str())
+                .fetch_optional(&mut *transaction)
+                .await?;
+        let Some((id, poster_resource_id)) = existing else {
+            return Err(RepositoryError::NotFound);
+        };
+
+        let actors = count_related(&mut transaction, "metadata_actor", id).await?;
+        let locks = count_related(&mut transaction, "metadata_lock", id).await?;
+        let tags = count_related(&mut transaction, "metadata_tag", id).await?;
+        let snapshots = count_related(&mut transaction, "source_snapshot", id).await?;
+
+        // 子表由外键级联删除, 这里只删主行.
+        sqlx::query("DELETE FROM metadata WHERE id = ?1")
+            .bind(id)
+            .execute(&mut *transaction)
+            .await?;
+
+        // 资源按远端地址共享: 还有别的条目引用时保留, 否则连同登记一起删.
+        let mut resources = Vec::new();
+        if let Some(resource_id) = poster_resource_id {
+            let still_used: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM metadata WHERE poster_resource_id = ?1")
+                    .bind(resource_id)
+                    .fetch_one(&mut *transaction)
+                    .await?;
+            if still_used == 0
+                && let Some(resource) =
+                    sqlx::query_as::<_, Resource>("DELETE FROM resource WHERE id = ?1 RETURNING *")
+                        .bind(resource_id)
+                        .fetch_optional(&mut *transaction)
+                        .await?
+            {
+                resources.push(resource);
+            }
+        }
+
+        transaction.commit().await?;
+
+        Ok(DeleteOutcome {
+            actors,
+            locks,
+            tags,
+            snapshots,
+            resources,
+        })
+    }
+
     /// 番号条目的各来源快照, 按来源标识排序.
     pub async fn snapshots(
         &self,
@@ -925,7 +1008,7 @@ mod tests {
 
     use super::{
         MANUAL_SOURCE, Metadata, MetadataFilter, MetadataInput, MetadataPatch, MetadataRepository,
-        ScrapeWrite, ScrapedMetadata, SourceSnapshotInput,
+        RepositoryError, ScrapeWrite, ScrapedMetadata, SourceSnapshotInput,
     };
     use crate::content_type::ContentType;
     use crate::db::Database;
@@ -955,6 +1038,171 @@ mod tests {
             actors: Some(actors),
             ..MetadataInput::default()
         }
+    }
+
+    #[tokio::test]
+    async fn delete_removes_entry_and_related_rows() {
+        let (_dir, repository, database) = repository_with_database().await;
+        let number = MediaNumber::parse("ABC-001").expect("应解析成功");
+        let actors = vec!["演员".to_owned()];
+        let row = repository
+            .upsert(
+                &number,
+                &MetadataInput {
+                    title: Some("标题"),
+                    actors: Some(&actors),
+                    ..MetadataInput::default()
+                },
+            )
+            .await
+            .expect("应写入成功");
+        repository
+            .set_lock(row.id, LockableField::Title, true)
+            .await
+            .expect("应加锁成功");
+        repository
+            .add_tag(row.id, "收藏")
+            .await
+            .expect("应加标签成功");
+        repository
+            .replace_snapshots(
+                row.id,
+                &[SourceSnapshotInput {
+                    source_id: "dmm",
+                    payload: ScrapedMetadata::default(),
+                }],
+            )
+            .await
+            .expect("应写入快照");
+
+        let outcome = repository.delete(&number).await.expect("应删除成功");
+
+        assert_eq!(outcome.actors, 1);
+        assert_eq!(outcome.locks, 1);
+        assert_eq!(outcome.tags, 1);
+        assert_eq!(outcome.snapshots, 1);
+        assert!(
+            repository
+                .find(&number)
+                .await
+                .expect("应查询成功")
+                .is_none(),
+            "条目应已删除"
+        );
+        for table in [
+            "metadata_actor",
+            "metadata_lock",
+            "metadata_tag",
+            "source_snapshot",
+        ] {
+            let left: i64 = sqlx::query_scalar(&format!(
+                "SELECT COUNT(*) FROM {table} WHERE metadata_id = ?1"
+            ))
+            .bind(row.id)
+            .fetch_one(database.read())
+            .await
+            .expect("应查询成功");
+            assert_eq!(left, 0, "{table} 不应留下孤儿行");
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_removes_entry_without_related_data() {
+        let (_dir, repository) = repository().await;
+        let number = MediaNumber::parse("ABC-002").expect("应解析成功");
+        repository
+            .upsert(&number, &MetadataInput::default())
+            .await
+            .expect("应写入成功");
+
+        let outcome = repository.delete(&number).await.expect("应删除成功");
+
+        assert_eq!(outcome.actors, 0);
+        assert!(outcome.resources.is_empty());
+        assert!(
+            repository
+                .find(&number)
+                .await
+                .expect("应查询成功")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_returns_resource_that_nobody_else_uses() {
+        let (_dir, repository, database) = repository_with_database().await;
+        let resources = crate::resource::ResourceRepository::new(database);
+        let number = MediaNumber::parse("ABC-003").expect("应解析成功");
+        let row = repository
+            .upsert(&number, &MetadataInput::default())
+            .await
+            .expect("应写入成功");
+        let resource = resources
+            .reserve("https://example.invalid/p.jpg", "image/jpeg", 1)
+            .await
+            .expect("应登记成功");
+        resources
+            .link_poster(row.id, Some(resource.id))
+            .await
+            .expect("应关联成功");
+
+        let outcome = repository.delete(&number).await.expect("应删除成功");
+
+        assert_eq!(outcome.resources.len(), 1, "无主资源应交给调用方清理");
+        assert!(
+            resources
+                .find(resource.id)
+                .await
+                .expect("应查询成功")
+                .is_none(),
+            "资源登记应随条目删除"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_keeps_resource_still_used_by_another_entry() {
+        let (_dir, repository, database) = repository_with_database().await;
+        let resources = crate::resource::ResourceRepository::new(database);
+        let shared = resources
+            .reserve("https://example.invalid/shared.jpg", "image/jpeg", 1)
+            .await
+            .expect("应登记成功");
+        for raw in ["ABC-004", "ABC-005"] {
+            let number = MediaNumber::parse(raw).expect("应解析成功");
+            let row = repository
+                .upsert(&number, &MetadataInput::default())
+                .await
+                .expect("应写入成功");
+            resources
+                .link_poster(row.id, Some(shared.id))
+                .await
+                .expect("应关联成功");
+        }
+
+        let number = MediaNumber::parse("ABC-004").expect("应解析成功");
+        let outcome = repository.delete(&number).await.expect("应删除成功");
+
+        assert!(
+            outcome.resources.is_empty(),
+            "另一个条目还在引用, 资源不能删"
+        );
+        assert!(
+            resources
+                .find(shared.id)
+                .await
+                .expect("应查询成功")
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_absent_entry_is_not_found() {
+        let (_dir, repository) = repository().await;
+        let number = MediaNumber::parse("ZZZ-999").expect("应解析成功");
+
+        let result = repository.delete(&number).await;
+
+        assert!(matches!(result, Err(RepositoryError::NotFound)));
     }
 
     #[tokio::test]

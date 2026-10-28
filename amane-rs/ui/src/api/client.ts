@@ -169,6 +169,9 @@ export const api = {
   metadata: (number: string): Promise<MetadataDto> =>
     request(`/api/metadata/${encodeURIComponent(number)}`),
 
+  deleteMetadata: (number: string): Promise<void> =>
+    requestVoid(`/api/metadata/${encodeURIComponent(number)}`, { method: "DELETE" }),
+
   updateMetadata: (number: string, payload: UpdateMetadataRequest): Promise<MetadataDto> =>
     request(`/api/metadata/${encodeURIComponent(number)}`, {
       method: "PATCH",

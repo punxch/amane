@@ -91,6 +91,15 @@ impl ResourceStore {
     }
 
     /// 读取已写入磁盘资源的内容.
+    /// 删除资源文件. 文件已不在时视为成功: 目标状态已经达成.
+    pub async fn remove_file(&self, resource: &Resource) -> io::Result<()> {
+        match tokio::fs::remove_file(self.root.join(&resource.file_name)).await {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
     pub async fn read(&self, resource: &Resource) -> io::Result<Vec<u8>> {
         if resource.file_name.contains('/') || resource.file_name.contains("..") {
             return Err(io::Error::new(
@@ -198,6 +207,30 @@ mod tests {
             PNG,
             "磁盘内容应与响应一致"
         );
+    }
+
+    #[tokio::test]
+    async fn remove_file_accepts_already_deleted_file() {
+        let (dir, store) = store().await;
+        let resource = amane_core::Resource {
+            id: 1,
+            url: "https://example.invalid/p.jpg".to_owned(),
+            file_name: "1.jpg".to_owned(),
+            content_type: "image/jpeg".to_owned(),
+            size_bytes: 1,
+            created_at: chrono::Utc::now(),
+        };
+        let path = dir.path().join("resources").join("1.jpg");
+        std::fs::create_dir_all(path.parent().expect("应有父目录")).expect("应创建目录");
+        std::fs::write(&path, b"x").expect("应写入文件");
+
+        store.remove_file(&resource).await.expect("应删除成功");
+        assert!(!path.exists());
+
+        store
+            .remove_file(&resource)
+            .await
+            .expect("文件已不在时应视为成功");
     }
 
     #[tokio::test]
