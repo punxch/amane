@@ -184,7 +184,7 @@ async fn load_detail(state: &AppState, number: &MediaNumber) -> Result<MetadataD
         .map(|field| field.as_str().to_owned())
         .collect();
 
-    // 删除前要告诉用户会连带删掉什么, 计数取自上面已经查出来的清单, 不额外查库.
+    // 删除前要告诉用户会连带删掉什么, 计数取自上面已经查出来的清单, 不额外查询数据库.
     dto.related = RelatedCounts {
         actors: dto.actors.len(),
         locks: dto.locked_fields.len(),

@@ -8,7 +8,7 @@ use axum::response::Response;
 
 /// 记录每个请求的完成情况.
 ///
-/// 只记路径不记查询串: 桌面外壳用 `?token=` 传令牌, 记下查询串等于把令牌写进日志.
+/// 只记录路径, 不记录查询串: 桌面外壳用 `?token=` 传令牌, 记录查询串等于把令牌写进日志.
 /// 级别固定为 INFO: 默认的 `EnvFilter` 是 `info`, 降到 DEBUG 的耗时日志在默认部署里看不到.
 pub async fn log_requests(request: Request, next: Next) -> Response {
     let method = request.method().clone();

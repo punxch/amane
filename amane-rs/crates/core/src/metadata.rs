@@ -148,7 +148,9 @@ impl From<&[String]> for Genres {
 /// 一个来源在某一时刻返回的元数据快照.
 ///
 /// 存的是来源自己的结果, 不是聚合后的条目: 字段溯源要能回答「当时这个来源说了什么」.
+/// 缺字段按默认值读取, 旧载荷因此不会因为新增字段而读不出来.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(default)]
 pub struct ScrapedMetadata {
     pub title: Option<String>,
     pub plot: Option<String>,
@@ -159,6 +161,8 @@ pub struct ScrapedMetadata {
     pub series: Option<String>,
     pub directors: Vec<String>,
     pub actors: Vec<String>,
+    /// 旧载荷把这一项写作 `tags`, 读入时一并接受.
+    #[serde(alias = "tags")]
     pub genres: Vec<String>,
     pub poster_url: Option<String>,
     /// 横版封面 (剧照); 与竖版海报分开, 详情页两个位置各用一张.
@@ -300,29 +304,11 @@ fn merge_sources(
     merged
 }
 
-/// 删除条目的结果: 连带删掉的关联数据条数, 以及需要调用方清理的文件.
+/// 删除条目的结果: 需要调用方清理的文件.
 #[derive(Debug, Clone, Default)]
 pub struct DeleteOutcome {
-    pub actors: i64,
-    pub locks: i64,
-    pub tags: i64,
-    pub snapshots: i64,
     /// 删除后不再被任何条目引用的资源; 文件由调用方删除.
     pub resources: Vec<Resource>,
-}
-
-/// 数一张子表里属于该条目的行数. 表名来自本文件内的固定字面量.
-async fn count_related(
-    transaction: &mut sqlx::Transaction<'_, Sqlite>,
-    table: &str,
-    metadata_id: i64,
-) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar(&format!(
-        "SELECT COUNT(*) FROM {table} WHERE metadata_id = ?1"
-    ))
-    .bind(metadata_id)
-    .fetch_one(&mut **transaction)
-    .await
 }
 
 /// 写入或更新一行, 调用方负责事务边界.
@@ -891,24 +877,20 @@ impl MetadataRepository {
 
     /// 删除条目与全部关联数据.
     ///
-    /// 只处理库: 资源文件由调用方在事务提交后删除. 反过来的顺序会让条目指向不存在的文件,
+    /// 只处理数据库: 资源文件由调用方在事务提交后删除. 反过来的顺序会让条目指向不存在的文件,
     /// 而这个顺序最坏只留下一个无主文件.
     pub async fn delete(&self, number: &MediaNumber) -> Result<DeleteOutcome, RepositoryError> {
         let mut transaction = self.database.write().begin().await?;
 
-        let existing: Option<(i64, Option<i64>)> =
-            sqlx::query_as("SELECT id, poster_resource_id FROM metadata WHERE number = ?1")
-                .bind(number.as_str())
-                .fetch_optional(&mut *transaction)
-                .await?;
-        let Some((id, poster_resource_id)) = existing else {
+        let existing: Option<(i64, Option<i64>, Option<i64>)> = sqlx::query_as(
+            "SELECT id, poster_resource_id, cover_resource_id FROM metadata WHERE number = ?1",
+        )
+        .bind(number.as_str())
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some((id, poster_resource_id, cover_resource_id)) = existing else {
             return Err(RepositoryError::NotFound);
         };
-
-        let actors = count_related(&mut transaction, "metadata_actor", id).await?;
-        let locks = count_related(&mut transaction, "metadata_lock", id).await?;
-        let tags = count_related(&mut transaction, "metadata_tag", id).await?;
-        let snapshots = count_related(&mut transaction, "source_snapshot", id).await?;
 
         // 子表由外键级联删除, 这里只删主行.
         sqlx::query("DELETE FROM metadata WHERE id = ?1")
@@ -917,19 +899,31 @@ impl MetadataRepository {
             .await?;
 
         // 资源按远端地址共享: 还有别的条目引用时保留, 否则连同登记一起删.
+        // 两类图各占一列, 同一地址可能被两列同时引用, 因此按标识去重后再判.
+        let mut candidates: Vec<i64> = [poster_resource_id, cover_resource_id]
+            .into_iter()
+            .flatten()
+            .collect();
+        candidates.sort_unstable();
+        candidates.dedup();
+
         let mut resources = Vec::new();
-        if let Some(resource_id) = poster_resource_id {
-            let still_used: i64 =
-                sqlx::query_scalar("SELECT COUNT(*) FROM metadata WHERE poster_resource_id = ?1")
+        for resource_id in candidates {
+            let still_used: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM metadata \
+                 WHERE poster_resource_id = ?1 OR cover_resource_id = ?1",
+            )
+            .bind(resource_id)
+            .fetch_one(&mut *transaction)
+            .await?;
+            if still_used > 0 {
+                continue;
+            }
+            if let Some(resource) =
+                sqlx::query_as::<_, Resource>("DELETE FROM resource WHERE id = ?1 RETURNING *")
                     .bind(resource_id)
-                    .fetch_one(&mut *transaction)
-                    .await?;
-            if still_used == 0
-                && let Some(resource) =
-                    sqlx::query_as::<_, Resource>("DELETE FROM resource WHERE id = ?1 RETURNING *")
-                        .bind(resource_id)
-                        .fetch_optional(&mut *transaction)
-                        .await?
+                    .fetch_optional(&mut *transaction)
+                    .await?
             {
                 resources.push(resource);
             }
@@ -937,13 +931,7 @@ impl MetadataRepository {
 
         transaction.commit().await?;
 
-        Ok(DeleteOutcome {
-            actors,
-            locks,
-            tags,
-            snapshots,
-            resources,
-        })
+        Ok(DeleteOutcome { resources })
     }
 
     /// 番号条目的各来源快照, 按来源标识排序.
@@ -1103,10 +1091,7 @@ mod tests {
 
         let outcome = repository.delete(&number).await.expect("应删除成功");
 
-        assert_eq!(outcome.actors, 1);
-        assert_eq!(outcome.locks, 1);
-        assert_eq!(outcome.tags, 1);
-        assert_eq!(outcome.snapshots, 1);
+        assert!(outcome.resources.is_empty(), "没有关联资源");
         assert!(
             repository
                 .find(&number)
@@ -1143,7 +1128,6 @@ mod tests {
 
         let outcome = repository.delete(&number).await.expect("应删除成功");
 
-        assert_eq!(outcome.actors, 0);
         assert!(outcome.resources.is_empty());
         assert!(
             repository
@@ -1219,6 +1203,64 @@ mod tests {
                 .expect("应查询成功")
                 .is_some()
         );
+    }
+
+    #[tokio::test]
+    async fn delete_recycles_cover_resource_too() {
+        let (_dir, repository, database) = repository_with_database().await;
+        let resources = crate::resource::ResourceRepository::new(database);
+        let number = MediaNumber::parse("ABC-006").expect("应解析成功");
+        let row = repository
+            .upsert(&number, &MetadataInput::default())
+            .await
+            .expect("应写入成功");
+        let cover = resources
+            .reserve("https://example.invalid/cover.jpg", "image/jpeg", 1)
+            .await
+            .expect("应登记成功");
+        repository
+            .set_cover_resource(row.id, cover.id)
+            .await
+            .expect("应关联成功");
+
+        let outcome = repository.delete(&number).await.expect("应删除成功");
+
+        assert_eq!(outcome.resources.len(), 1, "封面资源也应交给调用方清理");
+        assert!(
+            resources
+                .find(cover.id)
+                .await
+                .expect("应查询成功")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn reads_snapshot_payload_written_before_genres_rename() {
+        let (_dir, repository, database) = repository_with_database().await;
+        let number = MediaNumber::parse("ABC-007").expect("应解析成功");
+        let row = repository
+            .upsert(&number, &MetadataInput::default())
+            .await
+            .expect("应写入成功");
+        // 旧版本的载荷把分类写作 `tags`, 也没有 `cover_url`; 读端必须仍能解出.
+        sqlx::query(
+            "INSERT INTO source_snapshot (metadata_id, source_id, payload, fetched_at) \
+             VALUES (?1, ?2, ?3, ?4)",
+        )
+        .bind(row.id)
+        .bind("dmm")
+        .bind(r#"{"title":"标题","tags":["ドラマ"]}"#)
+        .bind(chrono::Utc::now())
+        .execute(database.write())
+        .await
+        .expect("应写入旧载荷");
+
+        let snapshots = repository.snapshots(row.id).await.expect("旧载荷应能读出");
+
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].payload.0.genres, vec!["ドラマ"]);
+        assert!(snapshots[0].payload.0.cover_url.is_none());
     }
 
     #[tokio::test]

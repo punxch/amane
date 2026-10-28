@@ -100,6 +100,7 @@ impl ResourceStore {
         }
     }
 
+    /// 读取已写入磁盘资源的内容.
     pub async fn read(&self, resource: &Resource) -> io::Result<Vec<u8>> {
         if resource.file_name.contains('/') || resource.file_name.contains("..") {
             return Err(io::Error::new(
