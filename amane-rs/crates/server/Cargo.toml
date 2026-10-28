@@ -13,6 +13,7 @@ path = "src/main.rs"
 amane-core.workspace = true
 amane-crawlers.workspace = true
 amane-net.workspace = true
+arc-swap.workspace = true
 amane-runtime.workspace = true
 axum.workspace = true
 chrono.workspace = true

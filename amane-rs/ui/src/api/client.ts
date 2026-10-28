@@ -25,6 +25,14 @@ export type ScheduleDto = Schemas["ScheduleDto"];
 export type SchedulePage = Schemas["SchedulePage"];
 export type CreateScheduleRequest = Schemas["CreateScheduleRequest"];
 export type UpdateScheduleRequest = Schemas["UpdateScheduleRequest"];
+export type ConfigState = Schemas["ConfigState"];
+export type SettingsDto = Schemas["SettingsDto"];
+
+/** 保存配置的请求体; 字段与 `Settings` 一致, 由后端拒绝未知取值. */
+export interface ConfigBody {
+  cold: { data_dir: string; bind: string; api_token: string | null };
+  hot: { concurrency: number; request_timeout_secs: number; enabled_sources: string[] };
+}
 
 export class ApiError extends Error {
   public readonly code: string;
@@ -156,6 +164,13 @@ export const api = {
   taskLog: (id: number): Promise<TaskLogPage> => request(`/api/tasks/${id}/log`),
 
   taskChildren: (id: number): Promise<TaskPage> => request(`/api/tasks/${id}/children`),
+
+  readConfig: (): Promise<SettingsDto> => request("/api/config"),
+
+  saveConfig: (body: ConfigBody): Promise<ConfigState> =>
+    request("/api/config", { method: "PUT", body: JSON.stringify(body) }),
+
+  configSchema: (): Promise<unknown> => request("/api/config/schema"),
 
   listSchedules: (): Promise<SchedulePage> => request("/api/schedules"),
 

@@ -1,3 +1,4 @@
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -76,7 +77,7 @@ pub struct WebClient {
     inner: RwLock<Arc<Client>>,
     profile: Mutex<Fingerprint>,
     limiters: RateLimiters,
-    timeout: Duration,
+    timeout: AtomicU64,
     max_rotations: u32,
 }
 
@@ -89,9 +90,28 @@ impl WebClient {
             inner: RwLock::new(Arc::new(client)),
             profile: Mutex::new(profile),
             limiters,
-            timeout,
+            timeout: AtomicU64::new(timeout.as_millis() as u64),
             max_rotations: u32::try_from(PROFILES.len().saturating_sub(1)).unwrap_or(0),
         })
+    }
+
+    /// 当前请求超时.
+    fn timeout_value(&self) -> Duration {
+        Duration::from_millis(self.timeout.load(std::sync::atomic::Ordering::SeqCst))
+    }
+
+    /// 就地更换请求超时. 重建客户端会丢弃连接池, 但热配置变更不频繁.
+    pub async fn set_timeout(&self, timeout: std::time::Duration) -> Result<(), NetError> {
+        // 先写超时再换客户端: 窗口期内发生的指纹轮换会按新超时构建, 不会被旧值覆盖.
+        self.timeout.store(
+            timeout.as_millis() as u64,
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        let client = build(timeout, self.fingerprint())?;
+        let mut inner = self.inner.write().await;
+        *inner = Arc::new(client);
+
+        Ok(())
     }
 
     /// 当前使用的档位, 供日志与排查使用.
@@ -193,7 +213,7 @@ impl WebClient {
             *profile
         };
 
-        let client = build(self.timeout, next)?;
+        let client = build(self.timeout_value(), next)?;
         *self.inner.write().await = Arc::new(client);
         tracing::info!(profile = ?next, "已切换浏览器指纹");
 

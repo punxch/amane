@@ -35,6 +35,8 @@ pub use state::{AppState, Runtime};
         routes::extract_number,
         routes::config_schema,
         routes::filter_options,
+        routes::read_config,
+        routes::update_config,
         routes::get_resource,
         routes::list_tasks,
         routes::create_task,
@@ -69,6 +71,10 @@ pub use state::{AppState, Runtime};
         dto::ScheduleDto,
         dto::SchedulePage,
         dto::CreateScheduleRequest,
+        dto::ConfigState,
+        dto::SettingsDto,
+        dto::ColdSettingsDto,
+        dto::HotSettingsDto,
         dto::UpdateScheduleRequest,
         error::ErrorBody,
     ))
@@ -161,7 +167,8 @@ fn ui_dir() -> Option<PathBuf> {
 }
 
 async fn require_token(State(state): State<AppState>, request: Request, next: Next) -> Response {
-    let Some(expected) = state.runtime.settings.cold.api_token.as_deref() else {
+    let settings = state.runtime.settings();
+    let Some(expected) = settings.cold.api_token.as_deref() else {
         return next.run(request).await;
     };
 
@@ -644,6 +651,133 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn config_round_trip_reports_applied_and_restart() {
+        let (_dir, app) = app(None).await;
+
+        let (status, current) = call(app.clone(), Method::GET, "/api/config", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(current["hot"]["concurrency"], 4);
+
+        // 以当前值为基准构造请求体, 冷配置部分原样带回, 不构成改动.
+        let mut hot_only = current.clone();
+        hot_only["hot"]["concurrency"] = serde_json::json!(2);
+        hot_only["hot"]["request_timeout_secs"] = serde_json::json!(20);
+        let hot_only_text = serde_json::to_string(&hot_only).expect("配置应可序列化");
+
+        let (status, updated) = call(
+            app.clone(),
+            Method::PUT,
+            "/api/config",
+            Some(&hot_only_text),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(updated["applied"], serde_json::json!(["concurrency"]));
+        assert_eq!(updated["restart_required"], serde_json::json!([]));
+        assert_eq!(updated["settings"]["hot"]["concurrency"], 2);
+
+        let (_, reloaded) = call(app.clone(), Method::GET, "/api/config", None).await;
+        assert_eq!(reloaded["hot"]["concurrency"], 2, "热配置应立即生效");
+
+        // 冷配置: 只登记改动并提示重启, 当前值不变.
+        let mut cold_change = hot_only;
+        cold_change["cold"]["bind"] = serde_json::json!("0.0.0.0:9000");
+        let cold_text = serde_json::to_string(&cold_change).expect("配置应可序列化");
+        let (status, changed) =
+            call(app.clone(), Method::PUT, "/api/config", Some(&cold_text)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(changed["restart_required"], serde_json::json!(["bind"]));
+        assert_eq!(changed["applied"], serde_json::json!([]));
+        assert_eq!(
+            changed["settings"]["cold"]["bind"], "127.0.0.1:8787",
+            "冷配置不应就地生效"
+        );
+    }
+
+    #[tokio::test]
+    async fn disabling_a_source_removes_it_from_the_active_set() {
+        let (_dir, app) = app(None).await;
+
+        let (_, current) = call(app.clone(), Method::GET, "/api/config", None).await;
+        let mut body = current.clone();
+        body["hot"]["enabled_sources"] = serde_json::json!(["dmm"]);
+        let text = serde_json::to_string(&body).expect("配置应可序列化");
+        let (status, updated) = call(app.clone(), Method::PUT, "/api/config", Some(&text)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            updated["applied"]
+                .as_array()
+                .expect("applied 应为数组")
+                .contains(&serde_json::json!("enabled_sources")),
+            "来源变化应报告为已生效"
+        );
+
+        let (_, options) = call(app.clone(), Method::GET, "/api/filters", None).await;
+        let ids: Vec<&str> = options["sources"]
+            .as_array()
+            .expect("来源应为数组")
+            .iter()
+            .filter_map(|item| item["id"].as_str())
+            .collect();
+        assert_eq!(ids, ["dmm"], "未列出的来源不应出现在可选项里");
+    }
+
+    #[tokio::test]
+    async fn config_rejects_unknown_field_and_out_of_range_value() {
+        let (_dir, app) = app(None).await;
+
+        let (status, body) = call(
+            app.clone(),
+            Method::PUT,
+            "/api/config",
+            Some(r#"{"hot":{"concurrency":4,"typo":1}}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["code"], "invalid_config");
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("typo"),
+            "错误说明应指出具体字段名, 实际 {}",
+            body["message"]
+        );
+
+        let (status, body) = call(
+            app.clone(),
+            Method::PUT,
+            "/api/config",
+            Some(r#"{"hot":{"concurrency":99}}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["code"], "invalid_config");
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("concurrency"),
+            "错误说明应指出越界字段名"
+        );
+
+        let (status, body) = call(
+            app.clone(),
+            Method::PUT,
+            "/api/config",
+            Some(r#"{"hot":{"enabled_sources":["nowhere"]}}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("nowhere")
+        );
+    }
+
+    #[tokio::test]
     async fn filter_options_come_from_registry() {
         let (_dir, app) = app(None).await;
 
@@ -867,6 +1001,7 @@ mod tests {
             "/api/metadata/{number}/tags",
             "/api/metadata/{number}/tags/{name}",
             "/api/number/extract",
+            "/api/config",
             "/api/config/schema",
             "/api/filters",
             "/api/tasks",

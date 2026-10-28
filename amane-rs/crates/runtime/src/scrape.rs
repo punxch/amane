@@ -56,8 +56,7 @@ impl TaskHandler for ScrapeHandler {
 
         context.logger.info(format!("开始刮削 {number}")).await;
 
-        let candidates: Vec<&dyn amane_crawlers::Source> =
-            self.sources.with_capability(Capability::Metadata).collect();
+        let candidates = self.sources.with_capability(Capability::Metadata);
         if candidates.is_empty() {
             context.logger.error("没有可用的来源").await;
             return Err(TaskError::Failed("没有可用的来源".to_owned()));

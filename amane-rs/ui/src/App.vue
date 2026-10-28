@@ -19,6 +19,13 @@ import { RouterLink, RouterView } from "vue-router";
             影片
           </RouterLink>
           <RouterLink
+            to="/settings"
+            class="rounded-md px-3 py-1 text-neutral-400 hover:text-neutral-200"
+            exact-active-class="bg-neutral-900 text-neutral-100"
+          >
+            设置
+          </RouterLink>
+          <RouterLink
             to="/schedules"
             class="rounded-md px-3 py-1 text-neutral-400 hover:text-neutral-200"
             exact-active-class="bg-neutral-900 text-neutral-100"

@@ -389,3 +389,51 @@ pub struct CreateScheduleRequest {
 pub struct UpdateScheduleRequest {
     pub enabled: Option<bool>,
 }
+
+/// 当前配置的传输形态. 与 `Settings` 分开, 令牌只在被显式设置时才出现.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SettingsDto {
+    pub cold: ColdSettingsDto,
+    pub hot: HotSettingsDto,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ColdSettingsDto {
+    pub data_dir: String,
+    pub bind: String,
+    pub api_token: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct HotSettingsDto {
+    pub concurrency: u32,
+    pub request_timeout_secs: u32,
+    pub enabled_sources: Vec<String>,
+}
+
+impl SettingsDto {
+    pub fn from_settings(value: &amane_core::config::Settings) -> Self {
+        Self {
+            cold: ColdSettingsDto {
+                data_dir: value.cold.data_dir.display().to_string(),
+                bind: value.cold.bind.clone(),
+                api_token: value.cold.api_token.clone(),
+            },
+            hot: HotSettingsDto {
+                concurrency: value.hot.concurrency,
+                request_timeout_secs: value.hot.request_timeout_secs,
+                enabled_sources: value.hot.enabled_sources.clone(),
+            },
+        }
+    }
+}
+
+/// 保存配置的结果: 已生效的热配置字段与需要重启的冷配置字段.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ConfigState {
+    pub settings: SettingsDto,
+    /// 已就地生效的字段名.
+    pub applied: Vec<String>,
+    /// 发生变化的冷配置字段; 非空表示需要重启进程.
+    pub restart_required: Vec<String>,
+}

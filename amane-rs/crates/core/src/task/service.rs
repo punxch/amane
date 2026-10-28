@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -28,7 +29,10 @@ pub enum TaskServiceError {
 pub struct TaskService {
     repository: TaskRepository,
     handlers: HashMap<TaskKind, Arc<dyn TaskHandler>>,
-    concurrency: usize,
+    /// 当前并发上限. 出队循环每次领取前读取, 因此可以就地调整.
+    concurrency: AtomicUsize,
+    /// 信号量凭证数即上限; 调小要回收空闲凭证, 调大要补发凭证.
+    permits: Arc<Semaphore>,
     log_root: PathBuf,
     notify: Notify,
     running: Mutex<HashMap<i64, CancellationToken>>,
@@ -47,10 +51,12 @@ impl TaskService {
             .map(|handler| (handler.kind(), handler))
             .collect();
 
+        let concurrency = concurrency.max(1);
         Arc::new(Self {
             repository,
             handlers,
-            concurrency: concurrency.max(1),
+            concurrency: AtomicUsize::new(concurrency),
+            permits: Arc::new(Semaphore::new(concurrency)),
             log_root,
             notify: Notify::new(),
             running: Mutex::new(HashMap::new()),
@@ -122,6 +128,18 @@ impl TaskService {
         self.shutdown.cancel();
     }
 
+    /// 就地调整并发上限. 运行中的任务照原样跑完, 不影响它们的收尾.
+    pub fn set_concurrency(&self, target: usize) {
+        let target = target.max(1);
+        let current = self.concurrency.swap(target, Ordering::SeqCst);
+        if target > current {
+            self.permits.add_permits(target - current);
+        } else if current > target {
+            // 只回收此刻空闲的凭证; 已被运行中的任务持有的不追回.
+            self.permits.forget_permits(current - target);
+        }
+    }
+
     /// 启动出队循环. 返回句柄用于在停机时等待循环退出.
     pub fn start(self: &Arc<Self>) -> JoinHandle<()> {
         let service = Arc::clone(self);
@@ -129,21 +147,19 @@ impl TaskService {
     }
 
     async fn dispatch_loop(self: Arc<Self>) {
-        let permits = Arc::new(Semaphore::new(self.concurrency));
-
         loop {
             tokio::select! {
                 () = self.shutdown.cancelled() => break,
                 () = self.notify.notified() => {}
                 () = tokio::time::sleep(IDLE_POLL) => {}
             }
-            self.dispatch_once(&permits).await;
+            self.dispatch_once(Arc::clone(&self.permits)).await;
         }
     }
 
-    async fn dispatch_once(self: &Arc<Self>, permits: &Arc<Semaphore>) {
+    async fn dispatch_once(self: &Arc<Self>, permits: Arc<Semaphore>) {
         loop {
-            let Ok(permit) = Arc::clone(permits).try_acquire_owned() else {
+            let Ok(permit) = permits.clone().try_acquire_owned() else {
                 break;
             };
 
@@ -459,6 +475,47 @@ mod tests {
         assert!(
             matches!(result, Err(TaskServiceError::NotCancellable(id)) if id == task.id),
             "终态任务不可取消"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrency_can_be_raised_in_place() {
+        let active = std::sync::Arc::new(AtomicUsize::new(0));
+        let peak = std::sync::Arc::new(AtomicUsize::new(0));
+        let handler = FnHandler::new(TaskKind::Scrape, {
+            let active = std::sync::Arc::clone(&active);
+            let peak = std::sync::Arc::clone(&peak);
+            move |_context| {
+                let active = std::sync::Arc::clone(&active);
+                let peak = std::sync::Arc::clone(&peak);
+                async move {
+                    let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(now, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(120)).await;
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    Ok(TaskOutcome::done())
+                }
+            }
+        });
+        let harness = harness(vec![handler], 1).await;
+
+        harness.service.set_concurrency(2);
+        harness
+            .service
+            .submit(scrape("AAA-001"))
+            .await
+            .expect("应入队");
+        harness
+            .service
+            .submit(scrape("BBB-002"))
+            .await
+            .expect("应入队");
+        tokio::time::sleep(Duration::from_millis(400)).await;
+
+        assert_eq!(
+            peak.load(Ordering::SeqCst),
+            2,
+            "调大并发上限后, 两个任务应能同时运行"
         );
     }
 

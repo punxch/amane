@@ -49,7 +49,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let runtime = Runtime::boot(settings).await?;
-    let listener = tokio::net::TcpListener::bind(&runtime.settings.cold.bind).await?;
+    let bind = runtime.settings().cold.bind.clone();
+    let listener = tokio::net::TcpListener::bind(&bind).await?;
     let address = listener.local_addr()?;
     tracing::info!(%address, "amane-server 已启动");
 

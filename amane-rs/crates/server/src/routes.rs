@@ -6,7 +6,7 @@ use amane_core::{
 };
 use axum::Json;
 use axum::Router;
-use axum::extract::rejection::QueryRejection;
+use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
@@ -14,10 +14,11 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 
 use crate::dto::{
-    ContentTypeOption, CreateMetadataRequest, CreateScheduleRequest, CreateTaskRequest,
-    ExtractedNumber, FilterOptions, HealthResponse, ListQuery, LockRequest, MetadataDto,
-    MetadataPage, ScheduleDto, SchedulePage, SourceOption, TagRequest, TaskDto, TaskListQuery,
-    TaskLogEntry, TaskLogPage, TaskPage, UpdateMetadataRequest, UpdateScheduleRequest,
+    ConfigState, ContentTypeOption, CreateMetadataRequest, CreateScheduleRequest,
+    CreateTaskRequest, ExtractedNumber, FilterOptions, HealthResponse, ListQuery, LockRequest,
+    MetadataDto, MetadataPage, ScheduleDto, SchedulePage, SettingsDto, SourceOption, TagRequest,
+    TaskDto, TaskListQuery, TaskLogEntry, TaskLogPage, TaskPage, UpdateMetadataRequest,
+    UpdateScheduleRequest,
 };
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -41,6 +42,7 @@ pub fn router() -> Router<AppState> {
         )
         .route("/filters", get(filter_options))
         .route("/number/extract", get(extract_number))
+        .route("/config", get(read_config).put(update_config))
         .route("/config/schema", get(config_schema))
         .route("/resources/{id}", get(get_resource))
         .route("/tasks", get(list_tasks).post(create_task))
@@ -349,6 +351,63 @@ pub async fn extract_number(
     }))
 }
 
+/// 当前配置. 令牌只返回给已授权的调用方, 且不参与表单之外的变化.
+#[utoipa::path(
+    get,
+    path = "/api/config",
+    tag = "config",
+    responses(
+        (status = 200, body = SettingsDto),
+        (status = 401, body = crate::error::ErrorBody)
+    )
+)]
+pub async fn read_config(State(state): State<AppState>) -> Result<Json<SettingsDto>, ApiError> {
+    Ok(Json(SettingsDto::from_settings(&state.runtime.settings())))
+}
+
+/// 保存配置. 热配置就地生效; 冷配置只登记改动并提示重启.
+#[utoipa::path(
+    put,
+    path = "/api/config",
+    tag = "config",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, body = ConfigState),
+        (status = 400, body = crate::error::ErrorBody),
+        (status = 401, body = crate::error::ErrorBody)
+    )
+)]
+pub async fn update_config(
+    State(state): State<AppState>,
+    body: Result<Json<amane_core::config::Settings>, JsonRejection>,
+) -> Result<Json<ConfigState>, ApiError> {
+    // 拒绝同样返回统一错误体: 框架默认的纯文本 400 让界面拿不到字段名.
+    let Json(incoming) = body.map_err(|error| ApiError::Invalid {
+        code: "invalid_config",
+        message: format!("配置不合法: {error}"),
+    })?;
+
+    // 先校验后生效: 越界取值不会替换旧的合法配置.
+    let restart_required = state.runtime.cold_diff(&incoming);
+    let applied = state
+        .runtime
+        .apply_hot(&incoming)
+        .await
+        .map_err(|error| ApiError::Invalid {
+            code: "invalid_config",
+            message: error.to_string(),
+        })?;
+
+    // 回显当前生效值, 不是提交值: 冷配置尚未生效, 界面据此显示真实状态.
+    let settings = state.runtime.settings();
+
+    Ok(Json(ConfigState {
+        settings: SettingsDto::from_settings(&settings),
+        applied,
+        restart_required,
+    }))
+}
+
 /// 配置表单 schema.
 ///
 /// 由 `schemars` 从内核的配置类型生成, 保留 `x-widget` 等表单提示;
@@ -576,6 +635,7 @@ fn metadata_filter(state: &AppState, query: &ListQuery) -> Result<MetadataFilter
             let known = state
                 .runtime
                 .sources
+                .active()
                 .iter()
                 .any(|source| source.descriptor().id == value);
             if !known {
@@ -623,6 +683,7 @@ pub async fn filter_options(State(state): State<AppState>) -> Json<FilterOptions
     let sources = state
         .runtime
         .sources
+        .active()
         .iter()
         .map(|source| SourceOption {
             id: source.descriptor().id.to_owned(),

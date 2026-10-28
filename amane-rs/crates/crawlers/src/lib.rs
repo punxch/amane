@@ -12,6 +12,7 @@ pub use dmm::DmmSource;
 pub use javdb::JavdbSource;
 
 use std::sync::Arc;
+use std::sync::RwLock;
 
 use amane_core::MediaNumber;
 use amane_net::WebClient;
@@ -77,13 +78,27 @@ pub trait Source: Send + Sync {
 
 /// 已登记的来源集合. 顺序即聚合优先级.
 #[derive(Default)]
+/// 来源登记表.
+///
+/// 处理函数持有的是同一份 `Arc<Registry>`, 因此启用集与顺序都必须就地更新.
 pub struct Registry {
-    sources: Vec<Box<dyn Source>>,
+    /// 全部已登记的来源, 按内置顺序.
+    all: Vec<Arc<dyn Source>>,
+    /// 当前参与聚合的来源, 顺序即聚合优先级.
+    active: RwLock<Vec<Arc<dyn Source>>>,
 }
 
 impl Registry {
     pub fn new(sources: Vec<Box<dyn Source>>) -> Self {
-        Self { sources }
+        let all: Vec<Arc<dyn Source>> = sources
+            .into_iter()
+            .map(|source| Arc::from(source) as Arc<dyn Source>)
+            .collect();
+        let active = all.clone();
+        Self {
+            all,
+            active: RwLock::new(active),
+        }
     }
 
     /// 内置来源. 站点实现在各自的切片中登记, 这里保持唯一的装配点.
@@ -94,38 +109,52 @@ impl Registry {
         ])
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &dyn Source> {
-        self.sources.iter().map(|source| source.as_ref())
+    /// 当前参与聚合的来源.
+    pub fn active(&self) -> Vec<Arc<dyn Source>> {
+        self.active
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
     }
 
     pub fn len(&self) -> usize {
-        self.sources.len()
+        self.active().len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.sources.is_empty()
+        self.len() == 0
     }
 
-    /// 按给定的标识顺序重排来源; 未列出的来源排在最后并保持原有相对顺序.
-    pub fn reorder(&mut self, order: &[String]) {
-        if order.is_empty() {
-            return;
-        }
-
-        let rank = |id: &str| {
+    /// 设置启用集与顺序.
+    ///
+    /// 空列表表示全部启用, 按内置顺序; 非空列表的取值即参与聚合的来源,
+    /// 列表顺序就是聚合优先级, 未列出的来源不参与.
+    pub fn apply_enabled_order(&self, order: &[String]) {
+        let next = if order.is_empty() {
+            self.all.clone()
+        } else {
             order
                 .iter()
-                .position(|candidate| candidate == id)
-                .unwrap_or(usize::MAX)
+                .filter_map(|id| {
+                    self.all
+                        .iter()
+                        .find(|source| source.descriptor().id == id.as_str())
+                        .cloned()
+                })
+                .collect()
         };
-        self.sources
-            .sort_by_key(|source| rank(source.descriptor().id));
+        *self
+            .active
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = next;
     }
 
     /// 按声明能力筛选来源.
-    pub fn with_capability(&self, capability: Capability) -> impl Iterator<Item = &dyn Source> {
-        self.iter()
+    pub fn with_capability(&self, capability: Capability) -> Vec<Arc<dyn Source>> {
+        self.active()
+            .into_iter()
             .filter(move |source| source.descriptor().capabilities.contains(&capability))
+            .collect()
     }
 }
 
@@ -178,6 +207,7 @@ mod tests {
 
         let ids: Vec<&str> = registry
             .with_capability(Capability::Search)
+            .iter()
             .map(|source| source.descriptor().id)
             .collect();
 
@@ -188,14 +218,15 @@ mod tests {
 
     #[test]
     fn reorder_follows_configured_priority() {
-        let mut registry = Registry::new(vec![
+        let registry = Registry::new(vec![
             stub("first", &[Capability::Metadata]),
             stub("second", &[Capability::Metadata]),
         ]);
 
-        registry.reorder(&["second".to_owned(), "first".to_owned()]);
+        registry.apply_enabled_order(&["second".to_owned(), "first".to_owned()]);
 
         let ids: Vec<&str> = registry
+            .active()
             .iter()
             .map(|source| source.descriptor().id)
             .collect();
@@ -203,19 +234,37 @@ mod tests {
     }
 
     #[test]
-    fn empty_order_keeps_registry_order() {
-        let mut registry = Registry::new(vec![
+    fn empty_order_enables_every_source() {
+        let registry = Registry::new(vec![
             stub("first", &[Capability::Metadata]),
             stub("second", &[Capability::Metadata]),
         ]);
 
-        registry.reorder(&[]);
+        registry.apply_enabled_order(&[]);
 
         let ids: Vec<&str> = registry
+            .active()
             .iter()
             .map(|source| source.descriptor().id)
             .collect();
         assert_eq!(ids, ["first", "second"]);
+    }
+
+    #[test]
+    fn unlisted_source_is_disabled() {
+        let registry = Registry::new(vec![
+            stub("first", &[Capability::Metadata]),
+            stub("second", &[Capability::Metadata]),
+        ]);
+
+        registry.apply_enabled_order(&["second".to_owned()]);
+
+        let ids: Vec<&str> = registry
+            .active()
+            .iter()
+            .map(|source| source.descriptor().id)
+            .collect();
+        assert_eq!(ids, ["second"], "未列出的来源不参与聚合");
     }
 
     #[test]
@@ -230,6 +279,7 @@ mod tests {
         let registry = Registry::builtin(client);
 
         let ids: Vec<&str> = registry
+            .active()
             .iter()
             .map(|source| source.descriptor().id)
             .collect();

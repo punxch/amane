@@ -34,6 +34,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
 async-trait = "0.1"
+arc-swap = "1"
 tokio-util = "0.7"
 
 # 持久化
