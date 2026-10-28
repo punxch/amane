@@ -154,7 +154,6 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tower",
- "tower-http",
  "tracing",
  "tracing-subscriber",
  "utoipa",
@@ -5110,7 +5109,6 @@ dependencies = [
  "tower",
  "tower-layer",
  "tower-service",
- "tracing",
  "url",
 ]
 

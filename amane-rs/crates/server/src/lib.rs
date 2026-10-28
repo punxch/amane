@@ -11,11 +11,11 @@ use axum::http::{StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use tower_http::trace::TraceLayer;
 use utoipa::OpenApi;
 
 pub mod dto;
 pub mod error;
+pub mod logging;
 pub mod routes;
 pub mod state;
 
@@ -126,7 +126,7 @@ pub fn build_router_with_ui(state: AppState, ui: Option<PathBuf>) -> Router {
 
     let router = Router::new()
         .nest("/api", api)
-        .layer(TraceLayer::new_for_http());
+        .layer(middleware::from_fn(logging::log_requests));
 
     match ui {
         Some(dir) => mount_ui(router, dir),
@@ -278,6 +278,34 @@ mod tests {
     use tower::ServiceExt;
 
     use super::{AppState, Runtime};
+
+    /// 把日志写进内存, 供断言字段是否存在.
+    struct LogBuffer(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogBuffer {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("应加锁").extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn capture_logs() -> (
+        std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+        tracing::dispatcher::DefaultGuard,
+    ) {
+        let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer = std::sync::Arc::clone(&buffer);
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_ansi(false)
+            .with_writer(move || LogBuffer(std::sync::Arc::clone(&writer)))
+            .finish();
+        (buffer, tracing::subscriber::set_default(subscriber))
+    }
 
     async fn app(api_token: Option<&str>) -> (tempfile::TempDir, axum::Router) {
         let (dir, router, _state) = app_state(api_token).await;
@@ -857,6 +885,24 @@ mod tests {
                 .as_str()
                 .is_some_and(|text| !text.is_empty()),
             "错误说明不能为空"
+        );
+    }
+
+    #[tokio::test]
+    async fn request_log_records_timing_without_token() {
+        let (_dir, app) = app(None).await;
+        let (buffer, _guard) = capture_logs();
+
+        let (status, _) = call(app, Method::GET, "/api/health?token=secret-value", None).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let logged = String::from_utf8(buffer.lock().expect("应加锁").clone()).expect("应为文本");
+        assert!(logged.contains("请求完成"), "应记录请求完成, 实际 {logged}");
+        assert!(logged.contains("elapsed_ms"), "应记录耗时");
+        assert!(logged.contains("status"), "应记录状态码");
+        assert!(
+            !logged.contains("secret-value"),
+            "查询串里的令牌不应进日志, 实际 {logged}"
         );
     }
 

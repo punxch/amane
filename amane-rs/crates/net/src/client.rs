@@ -183,12 +183,19 @@ impl WebClient {
                 Some(body) => client.post(url).json(body),
                 None => client.get(url),
             };
+            let started = std::time::Instant::now();
             let response = request
                 .send()
                 .await
                 .map_err(|error| request_error(url, &error))?;
 
             let status = response.status().as_u16();
+            tracing::info!(
+                %url,
+                status,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "上游请求完成"
+            );
             if !REJECTED.contains(&status) {
                 return Ok(response);
             }

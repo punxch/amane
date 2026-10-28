@@ -8,6 +8,7 @@ use amane_core::{
 };
 use async_trait::async_trait;
 use serde::Deserialize;
+use tracing::Instrument;
 
 use amane_crawlers::{Capability, Registry, ScrapedMetadata, SourceError, aggregate};
 
@@ -56,7 +57,10 @@ impl TaskHandler for ScrapeHandler {
         let fetched = tokio::select! {
             results = futures::future::join_all(candidates.iter().map(|source| async {
                 let id = source.descriptor().id;
-                (id, source.fetch(&number).await)
+                // 来源标识挂在 span 上: 该来源发出的每条上游日志都带它, 慢请求可按来源统计.
+                let span = tracing::info_span!("source", source = id);
+                let outcome = source.fetch(&number).instrument(span).await;
+                (id, outcome)
             })) => results,
             () = context.cancel.cancelled() => return Err(TaskError::Cancelled),
         };
