@@ -43,6 +43,7 @@ const filesLoading = ref(false);
 const preview = ref<OrganizePreviewDto | null>(null);
 const previewLibrary = ref<number | null>(null);
 const previewLoading = ref(false);
+const executing = ref(false);
 
 function conflictLabel(kind: string): string {
   return CONFLICT_LABELS[kind] ?? kind;
@@ -156,6 +157,33 @@ async function loadPreview(library: LibraryDto): Promise<void> {
     previewLibrary.value = null;
   } finally {
     previewLoading.value = false;
+  }
+}
+
+/**
+ * 执行整理. 冲突项统一按所选处置处理, 无冲突项照常移动;
+ * 落点由后端按当前配置重新渲染, 与预览同一套逻辑.
+ */
+async function execute(library: LibraryDto, action: string): Promise<void> {
+  if (preview.value === null) {
+    return;
+  }
+  executing.value = true;
+  try {
+    const choices: Record<string, string> = {};
+    for (const item of preview.value.items) {
+      if (item.conflict !== null && item.conflict !== undefined) {
+        choices[item.source_path] = action;
+      }
+    }
+    const task = await api.organizeExecute(library.id, choices);
+    report("ok", `整理任务 #${task.id} 已提交，完成后刷新查看结果`);
+    await loadPreview(library);
+    await refresh();
+  } catch (error) {
+    report("error", describe(error));
+  } finally {
+    executing.value = false;
   }
 }
 
@@ -290,6 +318,9 @@ onMounted(refresh);
                 <template v-if="preview.unmatched > 0">
                   {{ preview.unmatched }} 个文件提取不出番号，未参与整理。
                 </template>
+                <template v-if="preview.stale > 0">
+                  {{ preview.stale }} 个索引条目在磁盘上已不存在。
+                </template>
               </p>
               <p
                 v-if="(preview.items.length ?? 0) === 0"
@@ -297,28 +328,56 @@ onMounted(refresh);
               >
                 没有可整理的文件。先扫描，再确认文件名里带番号。
               </p>
-              <ul v-else class="mt-2 space-y-2 font-mono text-xs">
-                <li
-                  v-for="item in preview.items"
-                  :key="item.source_path"
-                  class="flex flex-wrap items-baseline gap-2"
-                >
-                  <span class="text-neutral-500">{{ item.source_path }}</span>
-                  <span class="text-neutral-600">→</span>
-                  <span class="text-neutral-200">{{ item.target_path }}</span>
-                  <span
-                    v-if="item.conflict"
-                    :class="[
-                      'rounded px-1.5 py-0.5 text-[10px]',
-                      item.conflict === 'same_path'
-                        ? 'bg-neutral-800 text-neutral-400'
-                        : 'bg-amber-950/60 text-amber-300',
-                    ]"
+              <template v-else>
+                <ul class="mt-2 space-y-2 font-mono text-xs">
+                  <li
+                    v-for="item in preview.items"
+                    :key="item.source_path"
+                    class="flex flex-wrap items-baseline gap-2"
                   >
-                    {{ conflictLabel(item.conflict) }}
-                  </span>
-                </li>
-              </ul>
+                    <span class="text-neutral-500">{{ item.source_path }}</span>
+                    <span class="text-neutral-600">→</span>
+                    <span class="text-neutral-200">{{ item.target_path }}</span>
+                    <span
+                      v-if="item.conflict"
+                      :class="[
+                        'rounded px-1.5 py-0.5 text-[10px]',
+                        item.conflict === 'same_path'
+                          ? 'bg-neutral-800 text-neutral-400'
+                          : 'bg-amber-950/60 text-amber-300',
+                      ]"
+                    >
+                      {{ conflictLabel(item.conflict) }}
+                    </span>
+                  </li>
+                </ul>
+                <div class="mt-3 flex flex-wrap gap-2 text-xs">
+                  <Button
+                    variant="ghost"
+                    :disabled="executing"
+                    @click="execute(library, 'skip')"
+                  >
+                    执行（跳过冲突）
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    :disabled="executing"
+                    @click="execute(library, 'rename')"
+                  >
+                    执行（冲突改名）
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    :disabled="executing"
+                    @click="execute(library, 'overwrite')"
+                  >
+                    执行（覆盖冲突）
+                  </Button>
+                </div>
+                <p class="mt-1 text-[10px] text-neutral-600">
+                  覆盖前旧文件进入库内回收目录，可恢复。
+                </p>
+              </template>
             </template>
           </div>
         </article>

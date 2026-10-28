@@ -25,6 +25,8 @@ pub struct OrganizePreview {
     pub items: Vec<PreviewItem>,
     /// 提取不出番号而无法参与整理的媒体文件数.
     pub unmatched: i64,
+    /// 索引里有但磁盘上已不存在的源文件数 (整理过或被外部移动).
+    pub stale: i64,
 }
 
 /// 组装预览. `root` 只用于探测磁盘占用; 除探测外不触碰文件系统.
@@ -38,8 +40,14 @@ pub fn build_preview(
 ) -> OrganizePreview {
     let mut items = Vec::with_capacity(requests.len());
     let mut unmatched = 0i64;
+    let mut stale = 0i64;
 
     for request in requests {
+        // 索引与磁盘脱节: 源已不存在的条目无法整理, 单独计数不误报冲突.
+        if root.join(request.source_rel).symlink_metadata().is_err() {
+            stale += 1;
+            continue;
+        }
         let ext = extension_of(request.source_rel);
         let context = TargetContext {
             number: request.number,
@@ -69,7 +77,11 @@ pub fn build_preview(
         });
     }
 
-    OrganizePreview { items, unmatched }
+    OrganizePreview {
+        items,
+        unmatched,
+        stale,
+    }
 }
 
 /// 从文件名提取番号; 提取不出的文件无法参与整理.
@@ -132,6 +144,8 @@ mod tests {
 
         let template =
             Template::parse("{maker}/{number}/{number}[-{title}].{ext}").expect("应解析成功");
+        std::fs::create_dir_all(dir.path().join("downloads/a")).expect("应创建目录");
+        std::fs::write(dir.path().join("downloads/a/ABC-123.mp4"), b"v").expect("应写入源");
         let preview = super::build_preview(
             &template,
             dir.path(),
@@ -159,6 +173,8 @@ mod tests {
             .expect("应写入条目");
 
         let template = Template::parse("{number}/{title}.{ext}").expect("应解析成功");
+        std::fs::create_dir_all(dir.path().join("a")).expect("应创建目录");
+        std::fs::write(dir.path().join("a/ABC-123.mp4"), b"v").expect("应写入源");
         let preview = super::build_preview(
             &template,
             dir.path(),
@@ -173,6 +189,8 @@ mod tests {
     async fn same_path_conflict_detected() {
         let dir = tempfile::tempdir().expect("应创建临时目录");
         let template = Template::parse("{number}.{ext}").expect("应解析成功");
+        // 源文件必须真实存在, 否则计入 stale 而不是冲突.
+        fs::write(dir.path().join("ABC-123.mp4"), b"v").expect("应写入源");
 
         let preview = super::build_preview(
             &template,
@@ -193,6 +211,8 @@ mod tests {
         // 磁盘上已有同路径文件, 但番号不同 (源是另一个番号).
         fs::create_dir_all(dir.path().join("XYZ-999")).expect("应创建目录");
         fs::write(dir.path().join("XYZ-999/XYZ-999.mp4"), b"x").expect("应写入文件");
+        fs::create_dir_all(dir.path().join("downloads")).expect("应创建目录");
+        fs::write(dir.path().join("downloads/XYZ-999.mp4"), b"v").expect("应写入源");
 
         let template = Template::parse("{number}/{number}.{ext}").expect("应解析成功");
         let preview = super::build_preview(
@@ -212,6 +232,8 @@ mod tests {
     async fn number_mismatch_conflict_from_plan() {
         let dir = tempfile::tempdir().expect("应创建临时目录");
         let template = Template::parse("{number}/{number}.{ext}").expect("应解析成功");
+        fs::create_dir_all(dir.path().join("downloads")).expect("应创建目录");
+        fs::write(dir.path().join("downloads/ABC-123.mp4"), b"v").expect("应写入源");
 
         // 目标路径被另一个番号的整理记录占用.
         let mut plans = BTreeMap::new();
@@ -235,6 +257,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("应创建临时目录");
         // number 与 maker 都空: 模板折叠到只剩分隔符, 渲染结果为空串, 无法整理.
         let template = Template::parse("{maker}/{number}").expect("应解析成功");
+        std::fs::create_dir_all(dir.path().join("downloads")).expect("应创建目录");
+        std::fs::write(dir.path().join("downloads/毫无番号.mp4"), b"v").expect("应写入源");
 
         let preview = super::build_preview(
             &template,
@@ -256,6 +280,23 @@ mod tests {
         let first = super::build_preview(&template, dir.path(), &requests, &BTreeMap::new());
         let second = super::build_preview(&template, dir.path(), &requests, &BTreeMap::new());
         assert_eq!(first, second);
+    }
+
+    #[tokio::test]
+    async fn stale_entries_are_counted_not_conflicts() {
+        let dir = tempfile::tempdir().expect("应创建临时目录");
+        let template = Template::parse("{number}/{number}.{ext}").expect("应解析成功");
+
+        // 索引里有, 磁盘上没有: 整理执行后的典型状态.
+        let preview = super::build_preview(
+            &template,
+            dir.path(),
+            &[request("ABC-123/ABC-123.mp4", "ABC-123", None)],
+            &BTreeMap::new(),
+        );
+
+        assert!(preview.items.is_empty(), "过期条目不应误报冲突");
+        assert_eq!(preview.stale, 1);
     }
 
     #[test]
@@ -313,6 +354,9 @@ mod tests {
 
         assert_eq!(requests.len(), 1, "提取不出番号的文件不进入预览");
 
+        // 源文件必须真实存在, 否则计入 stale 而不是预览项.
+        std::fs::create_dir_all(dir.path().join("downloads")).expect("应创建目录");
+        std::fs::write(dir.path().join("downloads/ABC-123.mp4"), b"v").expect("应写入源");
         let template = Template::parse("{number}.{ext}").expect("应解析成功");
         let preview = super::build_preview(&template, dir.path(), &requests, &BTreeMap::new());
         assert_eq!(preview.items[0].target_path, "ABC-123.mp4");

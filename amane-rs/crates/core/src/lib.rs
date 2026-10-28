@@ -28,8 +28,9 @@ pub use metadata::{
 };
 pub use number::{MediaNumber, NumberError};
 pub use organize::{
-    ConflictKind, OrganizeError, OrganizePlan, OrganizePreview, OrganizeRepository, PLACEHOLDERS,
-    PreviewItem, PreviewRequest, Template, TemplateError, build_preview, number_from_path,
+    ConflictAction, ConflictKind, OrganizeError, OrganizePlan, OrganizePreview, OrganizeRepository,
+    PLACEHOLDERS, PreviewItem, PreviewRequest, Template, TemplateError, build_preview,
+    execute_batch, number_from_path,
 };
 pub use resource::{Resource, ResourceError, ResourceRepository};
 pub use schedule::{

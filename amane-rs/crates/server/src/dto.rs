@@ -539,6 +539,8 @@ pub struct OrganizePreviewDto {
     pub items: Vec<PreviewItemDto>,
     /// 提取不出番号而无法参与整理的媒体文件数.
     pub unmatched: i64,
+    /// 索引里有但磁盘上已不存在的源文件数 (整理过或被外部移动).
+    pub stale: i64,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -550,4 +552,12 @@ pub struct PreviewItemDto {
     pub number: String,
     /// 冲突类别: exists / number_mismatch / same_path; 为空表示可直接整理.
     pub conflict: Option<String>,
+}
+
+/// 整理执行的请求体. choices 以源相对路径为键; 缺省跳过冲突项.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct OrganizeExecuteRequest {
+    /// 源相对路径 → 处置: `overwrite` / `rename`.
+    #[serde(default)]
+    pub choices: std::collections::HashMap<String, String>,
 }

@@ -229,4 +229,10 @@ export const api = {
 
   organizePreview: (id: number): Promise<OrganizePreviewDto> =>
     request(`/api/libraries/${id}/organize/preview`, { method: "POST" }),
+
+  organizeExecute: (id: number, choices: Record<string, string>): Promise<TaskDto> =>
+    request(`/api/libraries/${id}/organize/execute`, {
+      method: "POST",
+      body: JSON.stringify({ choices }),
+    }),
 };

@@ -17,9 +17,10 @@ use crate::dto::{
     ConfigState, ContentTypeOption, CreateLibraryRequest, CreateMetadataRequest,
     CreateScheduleRequest, CreateTaskRequest, ExtractedNumber, FilterOptions, HealthResponse,
     LibraryCountsDto, LibraryDto, LibraryFileDto, LibraryFilePage, LibraryFileQuery, LibraryPage,
-    ListQuery, LockRequest, MetadataDto, MetadataPage, OrganizePreviewDto, PreviewItemDto,
-    ScheduleDto, SchedulePage, SettingsDto, SourceOption, TagRequest, TaskDto, TaskListQuery,
-    TaskLogEntry, TaskLogPage, TaskPage, UpdateMetadataRequest, UpdateScheduleRequest,
+    ListQuery, LockRequest, MetadataDto, MetadataPage, OrganizeExecuteRequest, OrganizePreviewDto,
+    PreviewItemDto, ScheduleDto, SchedulePage, SettingsDto, SourceOption, TagRequest, TaskDto,
+    TaskListQuery, TaskLogEntry, TaskLogPage, TaskPage, UpdateMetadataRequest,
+    UpdateScheduleRequest,
 };
 use crate::error::{ApiError, ErrorBody};
 use crate::state::AppState;
@@ -71,6 +72,7 @@ pub fn router() -> Router<AppState> {
         .route("/libraries/{id}/scan", post(scan_library))
         .route("/libraries/{id}/files", get(list_library_files))
         .route("/libraries/{id}/organize/preview", post(organize_preview))
+        .route("/libraries/{id}/organize/execute", post(organize_execute))
 }
 
 #[utoipa::path(get, path = "/api/health", tag = "system", responses((status = 200, body = HealthResponse), (status = 401, body = crate::error::ErrorBody)))]
@@ -1206,5 +1208,58 @@ pub async fn organize_preview(
             })
             .collect(),
         unmatched: unmatched + preview.unmatched,
+        stale: preview.stale,
     }))
+}
+
+/// 整理执行: 按预览落点移动文件. 冲突项没有明确选择时跳过, 不会默默覆盖.
+///
+/// 落点由服务端按当前配置与条目重新渲染, 不信任客户端提交的目标路径.
+#[utoipa::path(
+    post,
+    path = "/api/libraries/{id}/organize/execute",
+    tag = "library",
+    params(("id" = i64, Path, description = "媒体库标识")),
+    request_body = OrganizeExecuteRequest,
+    responses(
+        (status = 202, body = TaskDto),
+        (status = 404, body = crate::error::ErrorBody),
+        (status = 401, body = crate::error::ErrorBody)
+    )
+)]
+pub async fn organize_execute(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(payload): Json<OrganizeExecuteRequest>,
+) -> Result<(StatusCode, Json<TaskDto>), ApiError> {
+    // 处置取值在提交时校验, 拼错的动词不进队列.
+    for action in payload.choices.values() {
+        if amane_core::ConflictAction::parse(action).is_none() {
+            return Err(ApiError::Invalid {
+                code: "invalid_action",
+                message: format!("未知处置: {action}"),
+            });
+        }
+    }
+
+    if state.runtime.libraries.find(id).await?.is_none() {
+        return Err(ApiError::NotFound {
+            what: format!("媒体库 {id} 不存在"),
+        });
+    }
+
+    let task = state
+        .runtime
+        .tasks
+        .submit(amane_core::TaskSpec::new(
+            amane_core::TaskKind::Organize,
+            serde_json::json!({
+                "library_id": id,
+                "choices": payload.choices,
+            }),
+        ))
+        .await
+        .map_err(map_task_error)?;
+
+    Ok((StatusCode::ACCEPTED, Json(TaskDto::from(task))))
 }

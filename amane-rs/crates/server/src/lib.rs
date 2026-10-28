@@ -56,6 +56,7 @@ pub use state::{AppState, Runtime};
         routes::scan_library,
         routes::list_library_files,
         routes::organize_preview,
+        routes::organize_execute,
     ),
     components(schemas(
         dto::MetadataDto,
@@ -91,6 +92,7 @@ pub use state::{AppState, Runtime};
         dto::LibraryFilePage,
         dto::OrganizePreviewDto,
         dto::PreviewItemDto,
+        dto::OrganizeExecuteRequest,
         error::ErrorBody,
     ))
 )]
@@ -1405,6 +1407,126 @@ mod tests {
         state.runtime.tasks.shutdown();
     }
 
+    /// 整理执行: 端到端. 落点与预览一致, 字幕随配, 登记写入, 跳过项在日志可读.
+    #[tokio::test]
+    async fn organize_execute_moves_files_end_to_end() {
+        let (dir, app, state) = app_state(None).await;
+        let worker = state.runtime.tasks.start();
+
+        let library = dir.path().join("library");
+        std::fs::create_dir_all(&library).expect("应创建库目录");
+        std::fs::write(library.join("ABC-123.mp4"), vec![0u8; 64]).expect("应写入视频");
+        std::fs::write(library.join("ABC-123.srt"), b"sub").expect("应写入字幕");
+        let payload = serde_json::json!({ "path": library.display().to_string() });
+        let (_, created) = call(
+            app.clone(),
+            Method::POST,
+            "/api/libraries",
+            Some(&serde_json::to_string(&payload).expect("应序列化")),
+        )
+        .await;
+        let id = created["id"].as_i64().expect("应带标识");
+
+        use amane_core::LibraryFile;
+        state
+            .runtime
+            .libraries
+            .replace_files(
+                id,
+                &[LibraryFile::new("ABC-123.mp4", amane_core::ScanKind::Media)],
+                &[],
+            )
+            .await
+            .expect("应写入索引");
+
+        // 未知处置被拒绝.
+        let (status, body) = call(
+            app.clone(),
+            Method::POST,
+            &format!("/api/libraries/{id}/organize/execute"),
+            Some(r#"{"choices": {"a.mp4": "nuke"}}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["code"], "invalid_action");
+
+        // 执行.
+        let (status, task) = call(
+            app.clone(),
+            Method::POST,
+            &format!("/api/libraries/{id}/organize/execute"),
+            Some("{}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        let task_id = task["id"].as_i64().expect("应带任务标识");
+        let mut settled = serde_json::Value::Null;
+        for _ in 0..200 {
+            let (_, current) = call(
+                app.clone(),
+                Method::GET,
+                &format!("/api/tasks/{task_id}"),
+                None,
+            )
+            .await;
+            if current["status"] == "done" || current["status"] == "failed" {
+                settled = current;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            settled["status"], "done",
+            "整理应成功: {}",
+            settled["error"]
+        );
+
+        // 落点与预览一致 (maker 空折叠): ABC-123/ABC-123.mp4 + 字幕.
+        assert!(library.join("ABC-123/ABC-123.mp4").exists());
+        assert!(library.join("ABC-123/ABC-123.srt").exists());
+        assert!(!library.join("ABC-123.mp4").exists());
+
+        // 日志区分成功与跳过: 已移动行存在.
+        let (_, log) = call(
+            app.clone(),
+            Method::GET,
+            &format!("/api/tasks/{task_id}/log"),
+            None,
+        )
+        .await;
+        let lines = log["items"].as_array().expect("日志应为数组");
+        let texts: Vec<&str> = lines
+            .iter()
+            .filter_map(|line| line["message"].as_str())
+            .collect();
+        assert!(
+            texts.iter().any(|text| text.contains("已移动")),
+            "成功项应有日志, 实际 {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|text| text.contains("整理完成")),
+            "应有汇总日志"
+        );
+
+        // 执行后的预览: 源已移走, 索引条目计为 stale 而不是误报冲突.
+        let (_, preview) = call(
+            app.clone(),
+            Method::POST,
+            &format!("/api/libraries/{id}/organize/preview"),
+            None,
+        )
+        .await;
+        assert_eq!(preview["stale"], 1, "已整理的源应计为过期索引");
+        assert_eq!(
+            preview["items"].as_array().expect("items 应为数组").len(),
+            0,
+            "过期条目不应进入冲突列表"
+        );
+
+        state.runtime.tasks.shutdown();
+        worker.abort();
+    }
+
     #[test]
     fn openapi_lists_every_route() {
         let document = super::openapi();
@@ -1435,6 +1557,7 @@ mod tests {
             "/api/libraries/{id}/scan",
             "/api/libraries/{id}/files",
             "/api/libraries/{id}/organize/preview",
+            "/api/libraries/{id}/organize/execute",
         ] {
             assert!(paths.contains_key(expected), "缺少路径 {expected}");
         }

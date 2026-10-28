@@ -62,12 +62,22 @@ impl Default for HotSettings {
 pub struct OrganizeSettings {
     /// 视频目标路径模板; 相对库根, 占位符见 `PLACEHOLDERS`.
     pub video_template: String,
+    /// 随视频一起整理的字幕扩展名; 空列表关闭字幕随配.
+    #[schemars(extend("x-widget" = "list"))]
+    pub subtitle_extensions: Vec<String>,
+    /// 是否为每个视频生成 STRM 指针文件, 正文是视频的完整绝对路径.
+    pub create_strm: bool,
 }
 
 impl Default for OrganizeSettings {
     fn default() -> Self {
         Self {
             video_template: "{maker}/{number}/{number}.{ext}".to_owned(),
+            subtitle_extensions: crate::organize::DEFAULT_SUBTITLE_EXTENSIONS
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect(),
+            create_strm: false,
         }
     }
 }
@@ -80,6 +90,22 @@ impl OrganizeSettings {
                 reason: error.to_string(),
             }
         })?;
+
+        for extension in &self.subtitle_extensions {
+            let normalized = crate::library::normalize_extension(extension);
+            let body = normalized.trim_start_matches('.');
+            if body.is_empty()
+                || !body
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+            {
+                return Err(ConfigError::BadValue {
+                    field: "organize.subtitle_extensions",
+                    reason: format!("扩展名 {extension:?} 不合法"),
+                });
+            }
+        }
+
         Ok(())
     }
 }
@@ -213,6 +239,7 @@ mod tests {
     fn organize_settings_reject_malformed_template() {
         let settings = OrganizeSettings {
             video_template: "{number".to_owned(),
+            ..OrganizeSettings::default()
         };
         match settings.validate() {
             Err(ConfigError::BadValue { field, .. }) => {
@@ -223,6 +250,7 @@ mod tests {
 
         let settings = OrganizeSettings {
             video_template: "{plot}".to_owned(),
+            ..OrganizeSettings::default()
         };
         match settings.validate() {
             Err(ConfigError::BadValue { reason, .. }) => {

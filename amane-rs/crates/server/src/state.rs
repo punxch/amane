@@ -11,7 +11,7 @@ use amane_core::{
 };
 use amane_crawlers::Registry;
 use amane_net::{Rate, RateLimiters, WebClient};
-use amane_runtime::{ResourceStore, ScanHandler, ScrapeHandler};
+use amane_runtime::{OrganizeHandler, ResourceStore, ScanHandler, ScrapeHandler};
 
 /// 启动失败的原因.
 #[derive(Debug, thiserror::Error)]
@@ -85,6 +85,7 @@ impl Runtime {
         registry.apply_enabled_order(&settings.hot.enabled_sources);
         let sources = Arc::new(registry);
         let libraries = LibraryRepository::new(database.clone());
+        let organize = OrganizeRepository::new(database.clone());
         let settings = Arc::new(ArcSwap::from_pointee(settings));
         let handlers: Vec<Arc<dyn TaskHandler>> = vec![
             ScrapeHandler::new(
@@ -93,6 +94,12 @@ impl Runtime {
                 Arc::clone(&resources),
             ),
             ScanHandler::new(libraries.clone(), Arc::clone(&settings)),
+            OrganizeHandler::new(
+                libraries.clone(),
+                metadata.clone(),
+                organize.clone(),
+                Arc::clone(&settings),
+            ),
         ];
         let tasks = TaskService::new(
             task_repository,
@@ -102,7 +109,6 @@ impl Runtime {
         );
         let schedules = ScheduleRepository::new(database.clone());
         let scheduler = Arc::new(Scheduler::new(schedules.clone(), Arc::clone(&tasks)));
-        let organize = OrganizeRepository::new(database.clone());
 
         Ok(Self {
             settings,
