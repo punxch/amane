@@ -63,7 +63,7 @@ impl IntoResponse for ApiError {
 
 /// 请求体提取器.
 ///
-/// 解析失败时返回统一错误体: 框架默认的纯文本 400 让界面拿不到错误码, 也无法按码分支.
+/// 解析失败时返回统一错误体: 框架默认的纯文本 400 让界面无法取得错误码, 也无法按码分支.
 pub struct ApiJson<T>(pub T);
 
 impl<S, T> FromRequest<S> for ApiJson<T>

@@ -99,7 +99,7 @@ mod tests {
     use crate::db::Database;
     use crate::library::LibraryRepository;
 
-    /// 两个真实的库根; organize_plan 外键指向 library_root, 登记必须有落点.
+    /// 两个真实的库根; organize_plan 外键指向 library_root, 登记必须有目标路径.
     async fn repository() -> (tempfile::TempDir, OrganizeRepository, i64, i64) {
         let dir = tempfile::tempdir().expect("应创建临时目录");
         let database = Database::open(&dir.path().join("amane.db"))

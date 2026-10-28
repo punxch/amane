@@ -1491,7 +1491,7 @@ mod tests {
         state.runtime.tasks.shutdown();
     }
 
-    /// 整理执行: 端到端. 落点与预览一致, 字幕随配, 登记写入, 跳过项在日志可读.
+    /// 整理执行: 端到端. 目标路径与预览一致, 字幕随配, 登记写入, 跳过项在日志可读.
     #[tokio::test]
     async fn organize_execute_moves_files_end_to_end() {
         let (dir, app, state) = app_state(None).await;
@@ -1565,7 +1565,7 @@ mod tests {
             settled["error"]
         );
 
-        // 落点与预览一致 (maker 空折叠): ABC-123/ABC-123.mp4 + 字幕.
+        // 目标路径与预览一致 (maker 空折叠): ABC-123/ABC-123.mp4 + 字幕.
         assert!(library.join("ABC-123/ABC-123.mp4").exists());
         assert!(library.join("ABC-123/ABC-123.srt").exists());
         assert!(!library.join("ABC-123.mp4").exists());
@@ -1924,7 +1924,7 @@ mod ui_tests {
         assert!(body.contains("app"));
 
         let (status, _, _) = get(app, "/api/health").await;
-        assert_eq!(status, StatusCode::OK, "接口路由不应被前端回退吞掉");
+        assert_eq!(status, StatusCode::OK, "接口路由不应被前端回退忽略");
     }
 
     #[tokio::test]

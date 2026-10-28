@@ -1,4 +1,4 @@
-//! 整理任务: 按预览落点移动文件; 冲突按预览时的选择处置, 结果逐项写入日志.
+//! 整理任务: 按预览目标移动文件; 冲突按预览时的选择处置, 结果逐项写入日志.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -72,7 +72,7 @@ impl TaskHandler for OrganizeHandler {
             .await
             .map_err(|error| TaskError::Failed(format!("读取扫描索引失败: {error}")))?;
 
-        // 与预览同一套配对与渲染: 落点一致由「同一份输入 + 同一函数」保证.
+        // 与预览同一套配对与渲染: 目标路径一致由「同一份输入 + 同一函数」保证.
         let mut numbers: Vec<(usize, amane_core::MediaNumber)> = Vec::new();
         let mut unmatched = 0i64;
         for (index, file) in media.iter().enumerate() {
@@ -301,7 +301,7 @@ mod tests {
         // 默认模板 {maker}/{number}/{number}.{ext}: maker 空折叠为 ABC-123/ABC-123.mp4.
         assert!(
             library.join("ABC-123/ABC-123.mp4").exists(),
-            "落点应与预览一致"
+            "目标路径应与预览一致"
         );
         assert!(library.join("ABC-123/ABC-123.srt").exists(), "字幕应随配");
         assert!(!library.join("ABC-123.mp4").exists(), "源应消失");

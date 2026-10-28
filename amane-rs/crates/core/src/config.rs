@@ -139,7 +139,7 @@ impl Default for ScanSettings {
 }
 
 impl ScanSettings {
-    /// 校验扩展名与黑名单正则. 非法取值在提交时拒绝, 不等下一次扫描才炸.
+    /// 校验扩展名与黑名单正则. 非法取值在提交时拒绝, 不等下一次扫描才发现.
     pub fn validate(&self) -> Result<(), ConfigError> {
         for extension in &self.media_extensions {
             let normalized = crate::library::normalize_extension(extension);

@@ -12,7 +12,7 @@ import {
 } from "@/api/client";
 import Button from "@/components/ui/Button.vue";
 
-/** 呈现顺序固定: 四类在前, 未识别兜底, 防止任何一类被静默吞掉. */
+/** 呈现顺序固定: 四类在前, 未识别兜底, 防止任何一类被静默忽略. */
 const KINDS: Array<{ value: string; label: string }> = [
   { value: "media", label: "媒体文件" },
   { value: "unwanted", label: "无效文件" },
@@ -165,7 +165,7 @@ async function loadPreview(library: LibraryDto): Promise<void> {
 
 /**
  * 执行整理. 冲突项统一按所选处置处理, 无冲突项照常移动;
- * 落点由后端按当前配置重新渲染, 与预览同一套逻辑.
+ * 目标路径由后端按当前配置重新渲染, 与预览同一套逻辑.
  */
 async function execute(library: LibraryDto, action: string): Promise<void> {
   if (preview.value === null) {

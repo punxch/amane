@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use thiserror::Error;
 
-/// 单个路径段的字节上限. 与 Python 版 `PATH_FIELD_MAX_BYTES` 对齐, 省略号计入上限.
+/// 单个路径段的字节上限, 省略号计入上限.
 pub const MAX_SEGMENT_BYTES: usize = 200;
 const ELLIPSIS: &str = "…";
 
@@ -25,7 +25,7 @@ pub const PLACEHOLDERS: &[&str] = &[
     "raw_name",
 ];
 
-/// 长字段写入路径前按字节截断; 与 Python 版的 `_CLIP_KEYS` 同集合 (Rust 切片无演员变量).
+/// 长字段写入路径前按字节截断; 演员变量不存在于 Rust 侧, 不参与截断.
 const CLIP_KEYS: &[&str] = &["title", "maker", "label", "series"];
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -528,7 +528,7 @@ mod tests {
         let rendered = template.render(&vars(&[("number", "ABC-123"), ("ext", "mp4")]));
         assert_eq!(rendered, "/mnt/ABC-123.mp4");
 
-        // 中间的空段只影响该段, 不吞掉锚.
+        // 中间的空段只影响该段, 不影响锚.
         let template = Template::parse("/mnt/{series}/{number}.{ext}").expect("应解析成功");
         let rendered = template.render(&vars(&[("number", "ABC-123"), ("ext", "mp4")]));
         assert_eq!(rendered, "/mnt/ABC-123.mp4");

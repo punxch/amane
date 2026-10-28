@@ -128,7 +128,7 @@ impl TaskService {
         self.shutdown.cancel();
     }
 
-    /// 就地调整并发上限. 运行中的任务照原样跑完, 不影响它们的收尾.
+    /// 就地调整并发上限. 运行中的任务照原样运行完毕, 不影响它们的收尾.
     pub fn set_concurrency(&self, target: usize) {
         let target = target.max(1);
         let current = self.concurrency.swap(target, Ordering::SeqCst);

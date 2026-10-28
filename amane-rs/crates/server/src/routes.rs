@@ -636,7 +636,7 @@ pub async fn task_log(
     }))
 }
 
-/// 查询参数解析失败也走统一错误体: 框架默认的纯文本 400 会让界面拿不到错误码.
+/// 查询参数解析失败也走统一错误体: 框架默认的纯文本 400 会让界面无法取得错误码.
 fn parse_query<T>(query: Result<Query<T>, QueryRejection>) -> Result<Query<T>, ApiError> {
     query.map_err(|error| ApiError::Invalid {
         code: "invalid_query",
@@ -1126,7 +1126,7 @@ pub async fn list_library_files(
     }))
 }
 
-/// 整理预览: 只读地给出每个媒体文件的落点与冲突, 不创建目录也不移动文件.
+/// 整理预览: 只读地给出每个媒体文件的目标路径与冲突, 不创建目录也不移动文件.
 ///
 /// 文件按文件名配对番号, 条目缺席时以番号参与渲染; 重复调用结果一致.
 #[utoipa::path(
@@ -1216,9 +1216,9 @@ pub async fn organize_preview(
     }))
 }
 
-/// 整理执行: 按预览落点移动文件. 冲突项没有明确选择时跳过, 不会默默覆盖.
+/// 整理执行: 按预览目标移动文件. 冲突项没有明确选择时跳过, 不会默默覆盖.
 ///
-/// 落点由服务端按当前配置与条目重新渲染, 不信任客户端提交的目标路径.
+/// 目标路径由服务端按当前配置与条目重新渲染, 不信任客户端提交的目标路径.
 #[utoipa::path(
     post,
     path = "/api/libraries/{id}/organize/execute",

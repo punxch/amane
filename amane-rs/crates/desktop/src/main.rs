@@ -16,7 +16,7 @@ fn main() {
                 rand::rng().fill_bytes(&mut bytes);
                 let token: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
 
-                // 数据目录与旧实现分开, 两者可同时安装.
+                // 数据目录独立, 两个实现可同时安装.
                 let data_dir = handle.path().app_data_dir().expect("应取得应用数据目录");
 
                 let settings = Settings {

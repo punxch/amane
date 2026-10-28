@@ -1,4 +1,4 @@
-//! 整理预览: 只读地给出每个文件的落点与冲突, 不碰磁盘.
+//! 整理预览: 只读地给出每个文件的目标路径与冲突, 不碰磁盘.
 
 use std::collections::BTreeMap;
 use std::path::Path;

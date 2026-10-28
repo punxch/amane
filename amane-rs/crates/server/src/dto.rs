@@ -285,7 +285,7 @@ pub struct TaskPage {
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateTaskRequest {
-    /// 任务类型: scrape / organize / refresh / cleanup. 目前只有 scrape 注册了处理函数.
+    /// 任务类型: scrape / organize / refresh / cleanup. 取值见 `TaskKind`.
     pub kind: String,
     /// 任务载荷, 结构由类型决定.
     pub payload: serde_json::Value,

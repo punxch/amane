@@ -34,7 +34,7 @@ pub struct Runtime {
     pub metadata: MetadataRepository,
     pub tasks: Arc<TaskService>,
     pub resources: Arc<ResourceStore>,
-    /// 来源登记表. 处理函数用它抓取, 筛选端点用它给出可选项.
+    /// 来源登记表. 处理函数用它获取, 筛选端点用它给出可选项.
     pub sources: Arc<Registry>,
     /// 定时任务登记与调度器. 循环由进程入口启动.
     pub schedules: ScheduleRepository,
@@ -150,7 +150,7 @@ impl Runtime {
         changed
     }
 
-    /// 应用热配置. 三项都就地生效: 正在运行的任务照原样跑完, 不受影响.
+    /// 应用热配置. 三项都就地生效: 正在运行的任务照原样运行完毕, 不受影响.
     ///
     /// 冷配置不在这里处理: 数据目录与监听地址等改动要重启进程才可能生效.
     pub async fn apply_hot(&self, incoming: &Settings) -> Result<Vec<String>, ConfigError> {
