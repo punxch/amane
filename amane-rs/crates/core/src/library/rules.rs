@@ -288,6 +288,29 @@ mod tests {
     }
 
     #[test]
+    fn default_extensions_cover_legacy_containers() {
+        let dir = tempfile::tempdir().expect("应创建临时目录");
+        let root = dir.path();
+        for name in [
+            "a.rmvb", "b.m4v", "c.mpg", "d.mpeg", "e.webm", "f.vob", "g.rm",
+        ] {
+            touch(root, name, 2048);
+        }
+
+        let outcome = scan_directory(root, &rules(&[], 0)).expect("应扫描成功");
+
+        assert_eq!(
+            kinds_of(&outcome, ScanKind::Media).len(),
+            7,
+            "老容器也应算媒体, 否则整个文件夹会被误判成残留"
+        );
+        assert!(
+            kinds_of(&outcome, ScanKind::Unrecognized).is_empty(),
+            "以上扩展名都不该落到未识别"
+        );
+    }
+
+    #[test]
     fn extension_boundary_split_media_and_unrecognized() {
         let dir = tempfile::tempdir().expect("应创建临时目录");
         let root = dir.path();
