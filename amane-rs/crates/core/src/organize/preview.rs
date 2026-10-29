@@ -6,6 +6,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use super::template::Template;
+use crate::ContentType;
 use crate::MediaNumber;
 use crate::metadata::Metadata;
 
@@ -104,10 +105,12 @@ pub fn variables_for(context: &TargetContext) -> BTreeMap<String, String> {
             .map(|date| date.to_string())
             .unwrap_or_default(),
     );
+    // 与番号提取用同一份判定: 路径关键词优先于条目上记着的类型.
     variables.insert(
         "content_type".to_owned(),
-        entry
-            .map(|row| row.content_type.as_str().to_owned())
+        ContentType::from_path(context.source_rel)
+            .or_else(|| entry.map(|row| row.content_type))
+            .map(|value| value.as_str().to_owned())
             .unwrap_or_default(),
     );
     variables.insert("ext".to_owned(), context.ext.to_owned());

@@ -415,9 +415,13 @@ pub async fn extract_number(
         what: format!("无法从「{}」识别番号", query.text),
     })?;
 
+    // 粘进来的常常是完整路径: 目录名里的关键词比番号形态更能说明它属于哪一类.
+    let content_type =
+        amane_core::ContentType::from_path(&query.text).unwrap_or_else(|| number.content_type());
+
     Ok(Json(ExtractedNumber {
         number: number.as_str().to_owned(),
-        content_type: number.content_type().as_str().to_owned(),
+        content_type: content_type.as_str().to_owned(),
         prefix: number.prefix().to_owned(),
     }))
 }

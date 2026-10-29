@@ -2021,6 +2021,36 @@ mod tests {
         }
         assert_eq!(json["info"]["version"], env!("CARGO_PKG_VERSION"));
     }
+
+    #[tokio::test]
+    async fn extract_uses_path_keywords_for_the_type() {
+        let (_dir, app) = app(None).await;
+
+        // 「里番/ABC-123.mp4」的 UTF-8 百分号编码.
+        let (status, body) = call(
+            app.clone(),
+            Method::GET,
+            "/api/number/extract?text=%E9%87%8C%E7%95%AA%2FABC-123.mp4",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["number"], "ABC-123");
+        assert_eq!(
+            body["content_type"], "hentai",
+            "目录名里的关键词应压过番号形态, 实际 {body}"
+        );
+
+        let (status, body) = call(
+            app,
+            Method::GET,
+            "/api/number/extract?text=ABC-123.mp4",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["content_type"], "censored", "没有关键词时按番号形态");
+    }
 }
 
 #[cfg(test)]
