@@ -19,8 +19,16 @@ pub const TRASH_DIRNAME: &str = ".amane_trash";
 
 /// 默认媒体扩展名. `.strm` 是路径指针, 算媒体入口但大小过滤对它无意义.
 pub const DEFAULT_MEDIA_EXTENSIONS: &[&str] = &[
-    ".mp4", ".mkv", ".avi", ".wmv", ".flv", ".mov", ".ts", ".iso", ".strm",
+    ".mp4", ".mkv", ".avi", ".wmv", ".flv", ".mov", ".ts", ".iso", ".strm", ".m4v", ".mpg",
+    ".mpeg", ".webm", ".vob", ".rm", ".rmvb",
 ];
+
+/// 附属文件的扩展名: 影片的图像与元数据 (Emby / Jellyfin / Kodi 那套命名).
+///
+/// 这类文件属于某一部影片而不属于操作系统, 因此单列一档: 归入系统产物会被清理删掉,
+/// 归入未识别又会把「这部片子没提取出番号」与「这是一张海报」混为一谈.
+/// 字幕不在其中 —— 它的扩展名来自配置, 由整理切片随片移动, 扫描层另立一份会与配置打架.
+const SIDECAR_EXTENSIONS: &[&str] = &[".nfo", ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"];
 
 /// 路径指针扩展名: 指向别处的字节, 文件本身的大小没有意义.
 const POINTER_EXTENSIONS: &[&str] = &[".strm"];
@@ -59,12 +67,14 @@ impl ScanRules {
     }
 
     fn is_media_extension(&self, path: &Path) -> bool {
-        path.extension()
-            .and_then(OsStr::to_str)
-            .is_some_and(|extension| {
-                self.media_extensions
-                    .contains(&format!(".{}", extension.to_lowercase()))
-            })
+        self.media_extensions.contains(&extension_of(path))
+    }
+
+    /// 是否为影片的图像或元数据.
+    ///
+    /// 只按扩展名判定, 不看文件名: `extrafanart/1.jpg` 与 `poster.jpg` 同属附属物.
+    fn is_sidecar(&self, path: &Path) -> bool {
+        SIDECAR_EXTENSIONS.contains(&extension_of(path).as_str())
     }
 
     /// 是否为低于阈值的媒体文件.
@@ -75,11 +85,7 @@ impl ScanRules {
         if self.min_file_size == 0 {
             return false;
         }
-        let extension = path
-            .extension()
-            .and_then(OsStr::to_str)
-            .map(|value| format!(".{}", value.to_lowercase()))
-            .unwrap_or_default();
+        let extension = extension_of(path);
         if POINTER_EXTENSIONS.contains(&extension.as_str()) {
             return false;
         }
@@ -120,7 +126,14 @@ impl ScanRules {
         }
 
         if !self.is_media_extension(relative) {
-            return LibraryFile::new(relative.to_string_lossy(), ScanKind::Unrecognized);
+            return LibraryFile::new(
+                relative.to_string_lossy(),
+                if self.is_sidecar(relative) {
+                    ScanKind::Sidecar
+                } else {
+                    ScanKind::Unrecognized
+                },
+            );
         }
 
         if self.is_undersized(relative, full) {
@@ -137,6 +150,14 @@ impl ScanRules {
 
         LibraryFile::new(relative.to_string_lossy(), ScanKind::Media)
     }
+}
+
+/// 小写带前导点的扩展名; 没有扩展名时为空串.
+fn extension_of(path: &Path) -> String {
+    path.extension()
+        .and_then(OsStr::to_str)
+        .map(|value| format!(".{}", value.to_lowercase()))
+        .unwrap_or_default()
 }
 
 /// 规范化扩展名: 小写、补前导点. 形如 `mp4` 与 `.MP4` 都归一为 `.mp4`.
@@ -301,19 +322,25 @@ mod tests {
     }
 
     #[test]
-    fn companion_only_dir_is_leftover_with_unrecognized_files() {
+    fn images_and_metadata_are_sidecar_not_unrecognized() {
         let dir = tempfile::tempdir().expect("应创建临时目录");
         let root = dir.path();
         fs::create_dir_all(root.join("extras")).expect("应创建子目录");
         touch(&root.join("extras"), "movie.srt", 64);
         touch(&root.join("extras"), "cover.jpg", 64);
+        touch(&root.join("extras"), "movie.nfo", 64);
 
         let outcome = scan_directory(root, &rules(&[], 0)).expect("应扫描成功");
 
         assert_eq!(
+            kinds_of(&outcome, ScanKind::Sidecar),
+            ["extras/cover.jpg", "extras/movie.nfo"],
+            "图像与元数据算附属文件, 与「这部片子没提取出番号」区分开"
+        );
+        assert_eq!(
             kinds_of(&outcome, ScanKind::Unrecognized),
-            ["extras/cover.jpg", "extras/movie.srt"],
-            "附属文件应归入未识别, 不能静默消失"
+            ["extras/movie.srt"],
+            "字幕的扩展名来自配置, 不并入附属文件"
         );
         assert_eq!(
             outcome
@@ -322,7 +349,29 @@ mod tests {
                 .map(|path| path.to_string_lossy().to_string())
                 .collect::<Vec<_>>(),
             ["extras"],
-            "仅含附属文件的目录应记为残留"
+            "残留看的是有没有媒体: 只有附属文件的目录仍记为残留"
+        );
+    }
+
+    #[test]
+    fn extrafanart_images_are_sidecar() {
+        let dir = tempfile::tempdir().expect("应创建临时目录");
+        let root = dir.path();
+        fs::create_dir_all(root.join("extrafanart")).expect("应创建子目录");
+        touch(&root.join("extrafanart"), "1.jpg", 64);
+        touch(&root.join("extrafanart"), "Thumbs.db", 64);
+
+        let outcome = scan_directory(root, &rules(&[], 0)).expect("应扫描成功");
+
+        assert_eq!(
+            kinds_of(&outcome, ScanKind::Sidecar),
+            ["extrafanart/1.jpg"],
+            "任意命名的剧照按扩展名判定"
+        );
+        assert_eq!(
+            kinds_of(&outcome, ScanKind::System),
+            ["extrafanart/Thumbs.db"],
+            "系统产物优先于附属文件"
         );
     }
 

@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use amane_core::library::{KindCounts, ScanRules};
 use amane_core::{
-    LibraryError, LibraryFile, LibraryRepository, ScanError, TaskContext, TaskError, TaskHandler,
-    TaskKind, TaskOutcome, TaskPayload,
+    LibraryError, LibraryRepository, ScanError, TaskContext, TaskError, TaskHandler, TaskKind,
+    TaskOutcome, TaskPayload,
 };
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
@@ -83,24 +83,13 @@ impl TaskHandler for ScanHandler {
                 other => TaskError::Failed(format!("写入扫描索引失败: {other}")),
             })?;
 
-        let counts = KindCounts {
-            media: count_of(&outcome.files, amane_core::ScanKind::Media),
-            unwanted: count_of(&outcome.files, amane_core::ScanKind::Unwanted),
-            system: count_of(&outcome.files, amane_core::ScanKind::System),
-            unrecognized: count_of(&outcome.files, amane_core::ScanKind::Unrecognized),
-            leftover_dir: outcome.leftover_dirs.len() as i64,
-        };
-        context
-            .logger
-            .info(format!(
-                "扫描完成: 媒体 {}、无效 {}、系统产物 {}、未识别 {}、残留目录 {}",
-                counts.media,
-                counts.unwanted,
-                counts.system,
-                counts.unrecognized,
-                counts.leftover_dir
-            ))
-            .await;
+        let counts = KindCounts::of_scan(&outcome.files, outcome.leftover_dirs.len());
+        let summary = counts
+            .pairs()
+            .map(|(kind, count)| format!("{} {count}", kind.label()))
+            .collect::<Vec<_>>()
+            .join("、");
+        context.logger.info(format!("扫描完成: {summary}")).await;
         context
             .logger
             .info(format!(
@@ -118,11 +107,6 @@ impl TaskHandler for ScanHandler {
 
         Ok(TaskOutcome::done())
     }
-}
-
-/// 按类别计数. 残留目录已在仓储层合并进同一张索引, 这里只计文件.
-fn count_of(files: &[LibraryFile], kind: amane_core::ScanKind) -> i64 {
-    i64::try_from(files.iter().filter(|file| file.kind == kind).count()).unwrap_or(i64::MAX)
 }
 
 #[cfg(test)]

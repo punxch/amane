@@ -20,7 +20,7 @@ impl LibraryRoot {
     }
 }
 
-/// 扫描后一个文件的归类. 前四类即规格中的四类呈现, 未识别单列一档防止静默消失.
+/// 扫描后一个文件的归类. 媒体与无效两类参与整理与清理, 其余只作呈现, 未识别单列一档防止静默消失.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type, Ord, PartialOrd,
 )]
@@ -31,22 +31,25 @@ pub enum ScanKind {
     Media,
     /// 无效文件: 命中黑名单或低于大小阈值, 进清理清单.
     Unwanted,
+    /// 附属文件: 影片的图像与元数据, 属于影片而不属于操作系统, 也不进清理清单.
+    Sidecar,
     /// 系统产物: 操作系统留下的附属文件.
     System,
-    /// 未识别: 扩展名不匹配任何规则, 不静默消失.
-    Unrecognized,
     /// 残留目录: 子树里没有任何媒体文件的目录.
     LeftoverDir,
+    /// 未识别: 扩展名不匹配任何规则, 不静默消失.
+    Unrecognized,
 }
 
 impl ScanKind {
     /// 全部取值. `as_str` 是唯一的字符串表, 解析从这里反查.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Media,
         Self::Unwanted,
+        Self::Sidecar,
         Self::System,
-        Self::Unrecognized,
         Self::LeftoverDir,
+        Self::Unrecognized,
     ];
 
     pub fn parse(value: &str) -> Option<Self> {
@@ -57,9 +60,22 @@ impl ScanKind {
         match self {
             Self::Media => "media",
             Self::Unwanted => "unwanted",
+            Self::Sidecar => "sidecar",
             Self::System => "system",
-            Self::Unrecognized => "unrecognized",
             Self::LeftoverDir => "leftover_dir",
+            Self::Unrecognized => "unrecognized",
+        }
+    }
+
+    /// 面向用户的名称; 任务日志与界面共用同一套措辞.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Media => "媒体文件",
+            Self::Unwanted => "无效文件",
+            Self::Sidecar => "附属文件",
+            Self::System => "系统产物",
+            Self::LeftoverDir => "残留目录",
+            Self::Unrecognized => "未识别",
         }
     }
 }

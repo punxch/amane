@@ -187,7 +187,22 @@ mod tests {
             LibraryFile::new(".DS_Store", ScanKind::System),
             LibraryFile::new("film.mp4", ScanKind::Media),
             LibraryFile::new("empty", ScanKind::LeftoverDir),
+            LibraryFile::new("poster.jpg", ScanKind::Sidecar),
         ]
+    }
+
+    #[test]
+    fn manifest_keeps_sidecar_files() {
+        let dir = tempfile::tempdir().expect("应创建临时目录");
+        let root = dir.path();
+        fs::write(root.join("poster.jpg"), vec![0u8; 8]).expect("应写入附属文件");
+
+        let manifest = build_cleanup_manifest(&index(), root);
+
+        assert!(
+            !manifest.iter().any(|item| item.path == "poster.jpg"),
+            "附属文件是影片的资料, 清理不得删"
+        );
     }
 
     #[test]

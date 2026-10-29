@@ -1,5 +1,6 @@
 //! 媒体库登记与扫描索引的持久化.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
@@ -50,25 +51,36 @@ async fn prepare_root(raw: &str) -> Result<PathBuf, LibraryError> {
 }
 
 /// 每个根目录的扫描结果统计.
+///
+/// 以类别为键而不是逐类别一个字段: 加一档归类时这里不必改, 遍历 `ScanKind::ALL` 即可.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct KindCounts {
-    pub media: i64,
-    pub unwanted: i64,
-    pub system: i64,
-    pub unrecognized: i64,
-    pub leftover_dir: i64,
-}
+pub struct KindCounts(BTreeMap<ScanKind, i64>);
 
 impl KindCounts {
-    /// 按类别顺序给出 (类别名, 数量), 界面据此渲染四类与未识别.
-    pub fn as_pairs(&self) -> [(&'static str, i64); 5] {
-        [
-            ("media", self.media),
-            ("unwanted", self.unwanted),
-            ("system", self.system),
-            ("unrecognized", self.unrecognized),
-            ("leftover_dir", self.leftover_dir),
-        ]
+    /// 由 (类别, 数量) 逐项累加.
+    pub fn from_pairs(pairs: impl IntoIterator<Item = (ScanKind, i64)>) -> Self {
+        let mut counts = Self::default();
+        for (kind, count) in pairs {
+            *counts.0.entry(kind).or_insert(0) += count;
+        }
+        counts
+    }
+
+    /// 由一次扫描的结果统计; 残留目录不在文件列表里, 单独计入.
+    pub fn of_scan(files: &[LibraryFile], leftover_dirs: usize) -> Self {
+        let mut counts = Self::from_pairs(files.iter().map(|file| (file.kind, 1)));
+        counts.0.insert(ScanKind::LeftoverDir, leftover_dirs as i64);
+        counts
+    }
+
+    /// 某一类的条数; 未出现过的类别为 0.
+    pub fn get(&self, kind: ScanKind) -> i64 {
+        self.0.get(&kind).copied().unwrap_or(0)
+    }
+
+    /// 按 `ScanKind::ALL` 的顺序逐类给出 (类别, 数量).
+    pub fn pairs(&self) -> impl Iterator<Item = (ScanKind, i64)> + '_ {
+        ScanKind::ALL.into_iter().map(|kind| (kind, self.get(kind)))
     }
 }
 
@@ -349,19 +361,10 @@ impl LibraryRepository {
         .fetch_all(self.database.read())
         .await?;
 
-        let mut counts = KindCounts::default();
-        for (kind, count) in rows {
-            match ScanKind::parse(&kind) {
-                Some(ScanKind::Media) => counts.media = count,
-                Some(ScanKind::Unwanted) => counts.unwanted = count,
-                Some(ScanKind::System) => counts.system = count,
-                Some(ScanKind::Unrecognized) => counts.unrecognized = count,
-                Some(ScanKind::LeftoverDir) => counts.leftover_dir = count,
-                None => continue,
-            }
-        }
-
-        Ok(counts)
+        // 认不出的类别只可能来自更早版本的索引, 跳过而不是让整条统计失败.
+        Ok(KindCounts::from_pairs(rows.into_iter().filter_map(
+            |(kind, count)| ScanKind::parse(&kind).map(|kind| (kind, count)),
+        )))
     }
 }
 
@@ -370,7 +373,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::super::model::{LibraryFile, ScanKind, UnwantedRule};
-    use super::{KindCounts, LibraryError, LibraryRepository};
+    use super::{LibraryError, LibraryRepository};
     use crate::db::Database;
 
     async fn repository() -> (tempfile::TempDir, LibraryRepository) {
@@ -519,15 +522,16 @@ mod tests {
             .expect("应写入成功");
 
         let counts = repository.counts(root.id).await.expect("应统计成功");
+        assert_eq!(counts.get(ScanKind::Media), 1);
+        assert_eq!(counts.get(ScanKind::Unwanted), 1);
+        assert_eq!(counts.get(ScanKind::System), 1);
+        assert_eq!(counts.get(ScanKind::Unrecognized), 1);
+        assert_eq!(counts.get(ScanKind::LeftoverDir), 1);
+        assert_eq!(counts.get(ScanKind::Sidecar), 0, "没有附属文件时应为 0");
         assert_eq!(
-            counts,
-            KindCounts {
-                media: 1,
-                unwanted: 1,
-                system: 1,
-                unrecognized: 1,
-                leftover_dir: 1,
-            }
+            counts.pairs().map(|(kind, _)| kind).collect::<Vec<_>>(),
+            ScanKind::ALL.to_vec(),
+            "逐类给出的顺序应与类别清单一致"
         );
 
         let (total, rows) = repository

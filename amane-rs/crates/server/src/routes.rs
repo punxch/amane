@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use amane_core::TaskLogger;
 use amane_core::{
     LockableField, MediaNumber, MetadataFilter, MetadataInput, SchedulePatch, ScheduleSpec,
@@ -15,12 +17,12 @@ use axum::routing::{get, post, put};
 use crate::dto::{
     CleanupItemDto, CleanupManifestDto, ConfigState, ContentTypeOption, CreateLibraryRequest,
     CreateMetadataRequest, CreateScheduleRequest, CreateTaskRequest, ExtractedNumber,
-    FilterOptions, HealthResponse, LibraryCountsDto, LibraryDto, LibraryFileDto, LibraryFilePage,
-    LibraryFileQuery, LibraryPage, ListQuery, LockRequest, MetadataDto, MetadataPage,
-    OrganizeExecuteRequest, OrganizePreviewDto, PreviewItemDto, RelatedCounts, RestoreRequest,
-    ScheduleDto, SchedulePage, SettingsDto, SourceOption, TagRequest, TaskDto, TaskListQuery,
-    TaskLogEntry, TaskLogPage, TaskPage, TrashItemDto, TrashPageDto, UpdateConfigRequest,
-    UpdateMetadataRequest, UpdateScheduleRequest, field_views,
+    FilterOptions, HealthResponse, LibraryDto, LibraryFileDto, LibraryFilePage, LibraryFileQuery,
+    LibraryPage, ListQuery, LockRequest, MetadataDto, MetadataPage, OrganizeExecuteRequest,
+    OrganizePreviewDto, PreviewItemDto, RelatedCounts, RestoreRequest, ScheduleDto, SchedulePage,
+    SettingsDto, SourceOption, TagRequest, TaskDto, TaskListQuery, TaskLogEntry, TaskLogPage,
+    TaskPage, TrashItemDto, TrashPageDto, UpdateConfigRequest, UpdateMetadataRequest,
+    UpdateScheduleRequest, field_views, kind_counts,
 };
 use crate::error::{ApiError, ApiJson, ErrorBody};
 use crate::state::AppState;
@@ -1000,7 +1002,7 @@ pub async fn list_libraries(State(state): State<AppState>) -> Result<Json<Librar
             id: root.id,
             path: root.path,
             created_at: root.created_at,
-            counts: LibraryCountsDto::from(counts),
+            counts: kind_counts(counts),
         });
     }
     let total = i64::try_from(items.len()).unwrap_or(i64::MAX);
@@ -1033,7 +1035,7 @@ pub async fn create_library(
             id: root.id,
             path: root.path,
             created_at: root.created_at,
-            counts: LibraryCountsDto::default(),
+            counts: BTreeMap::new(),
         }),
     ))
 }

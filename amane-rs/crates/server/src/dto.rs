@@ -542,30 +542,16 @@ pub struct LibraryDto {
     /// 登记的绝对路径.
     pub path: String,
     pub created_at: DateTime<Utc>,
-    /// 最近一次扫描的各类统计; 从未扫描时全为 0.
-    pub counts: LibraryCountsDto,
+    /// 最近一次扫描的各类统计; 键是 `ScanKind` 的标识, 从未扫描时全为 0.
+    pub counts: BTreeMap<String, i64>,
 }
 
-/// 每个类别的条数.
-#[derive(Debug, Default, Serialize, ToSchema)]
-pub struct LibraryCountsDto {
-    pub media: i64,
-    pub unwanted: i64,
-    pub system: i64,
-    pub unrecognized: i64,
-    pub leftover_dir: i64,
-}
-
-impl From<amane_core::KindCounts> for LibraryCountsDto {
-    fn from(value: amane_core::KindCounts) -> Self {
-        Self {
-            media: value.media,
-            unwanted: value.unwanted,
-            system: value.system,
-            unrecognized: value.unrecognized,
-            leftover_dir: value.leftover_dir,
-        }
-    }
+/// 把内核的统计转成传输形态: 键是类别标识, 取值域由 `ScanKind` 给出.
+pub fn kind_counts(value: amane_core::KindCounts) -> BTreeMap<String, i64> {
+    value
+        .pairs()
+        .map(|(kind, count)| (kind.as_str().to_owned(), count))
+        .collect()
 }
 
 #[derive(Debug, Deserialize, ToSchema)]

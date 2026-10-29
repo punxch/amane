@@ -12,10 +12,11 @@ import {
 } from "@/api/client";
 import Button from "@/components/ui/Button.vue";
 
-/** 呈现顺序固定: 四类在前, 未识别兜底, 防止任何一类被静默忽略. */
+/** 呈现顺序固定: 参与处理的类别在前, 未识别兜底, 防止任何一类被静默忽略. */
 const KINDS: Array<{ value: string; label: string }> = [
   { value: "media", label: "媒体文件" },
   { value: "unwanted", label: "无效文件" },
+  { value: "sidecar", label: "附属文件" },
   { value: "system", label: "系统产物" },
   { value: "leftover_dir", label: "残留目录" },
   { value: "unrecognized", label: "未识别" },

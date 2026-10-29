@@ -89,7 +89,6 @@ pub use state::{AppState, Runtime};
         dto::HotSettingsDto,
         dto::UpdateScheduleRequest,
         dto::LibraryDto,
-        dto::LibraryCountsDto,
         dto::LibraryPage,
         dto::CreateLibraryRequest,
         dto::LibraryFileDto,
