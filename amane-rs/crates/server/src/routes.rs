@@ -717,7 +717,7 @@ fn metadata_filter(state: &AppState, query: &ListQuery) -> Result<MetadataFilter
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
 
-    // 分类是开放取值, 不做白名单校验: 写错一个字得到空列表, 而不是让整个筛选报错.
+    // 题材是开放取值, 不做白名单校验: 写错一个字得到空列表, 而不是让整个筛选报错.
     let genre = query
         .genre
         .as_deref()

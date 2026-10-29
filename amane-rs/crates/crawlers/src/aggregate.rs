@@ -185,7 +185,7 @@ mod tests {
         assert_eq!(
             merged.field_sources.get("genres").map(String::as_str),
             Some("b"),
-            "分类的字段来源应记到真正提供的那个来源"
+            "题材的字段来源应记到真正提供的那个来源"
         );
     }
 

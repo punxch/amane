@@ -389,7 +389,7 @@ onMounted(async () => {
             v-model="query.genre"
             class="scheme-dark rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1.5 text-sm text-neutral-300 outline-none focus:border-emerald-600"
           >
-            <option value="">全部分类</option>
+            <option value="">全部题材</option>
             <option v-for="genre in filters?.genres ?? []" :key="genre" :value="genre">
               {{ genre }}
             </option>
@@ -584,7 +584,7 @@ onMounted(async () => {
           </p>
 
           <p v-if="detail.genres.length > 0" class="mt-2 text-xs text-neutral-400">
-            分类: {{ detail.genres.join("、") }}
+            题材: {{ detail.genres.join("、") }}
           </p>
 
           <p v-if="detail.actors.length > 0" class="mt-2 text-xs text-neutral-400">

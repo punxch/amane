@@ -988,17 +988,17 @@ mod tests {
         assert_eq!(
             detail["genres"],
             serde_json::json!(["ドラマ", "美少女"]),
-            "详情应返回分类"
+            "详情应返回题材"
         );
 
         let (_, options) = call(app.clone(), Method::GET, "/api/filters", None).await;
         let listed: Vec<&str> = options["genres"]
             .as_array()
-            .expect("分类应为数组")
+            .expect("题材应为数组")
             .iter()
             .filter_map(|value| value.as_str())
             .collect();
-        assert!(listed.contains(&"ドラマ"), "筛选选项应含全部分类");
+        assert!(listed.contains(&"ドラマ"), "筛选选项应含全部题材");
 
         let (status, page) = call(
             app.clone(),
@@ -1008,7 +1008,7 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(page["total"], 1, "按分类筛选应命中");
+        assert_eq!(page["total"], 1, "按题材筛选应命中");
 
         let (status, page) = call(
             app.clone(),
@@ -1018,7 +1018,7 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(page["total"], 0, "分类是开放取值, 未知分类得到空列表");
+        assert_eq!(page["total"], 0, "题材是开放取值, 未知题材得到空列表");
     }
 
     #[tokio::test]

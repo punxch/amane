@@ -42,7 +42,7 @@ pub struct MetadataDto {
     pub locked_fields: Vec<String>,
     /// 用户标签.
     pub tags: Vec<String>,
-    /// 分类; 按来源整份取首个非空.
+    /// 题材; 按来源整份取首个非空.
     pub genres: Vec<String>,
     /// 逐字段视图; 只有详情端点填充.
     pub fields: Vec<MetadataFieldDto>,
@@ -208,7 +208,7 @@ pub struct ListQuery {
     pub source: Option<String>,
     /// 关键字, 匹配番号与标题, 忽略大小写.
     pub q: Option<String>,
-    /// 分类名; 取值由 `GET /api/filters` 给出.
+    /// 题材名; 取值由 `GET /api/filters` 给出.
     pub genre: Option<String>,
 }
 

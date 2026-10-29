@@ -26,14 +26,14 @@ pub struct MetadataFilter {
     pub source: Option<String>,
     /// 关键字: 匹配番号或标题, 忽略大小写.
     pub keyword: Option<String>,
-    /// 分类名; 命中该分类的条目.
+    /// 题材名; 命中该题材的条目.
     pub genre: Option<String>,
 }
 
 impl MetadataFilter {
     /// 校验取值域有界的筛选值: 来源必须在已知集合里.
     ///
-    /// 分类是开放取值, 不在此列 —— 写错一个字得到空列表, 而不是让整个筛选报错.
+    /// 题材是开放取值, 不在此列 —— 写错一个字得到空列表, 而不是让整个筛选报错.
     pub fn validate(&self, known_sources: &[&str]) -> Result<(), FilterError> {
         let Some(source) = self.source.as_deref() else {
             return Ok(());
@@ -88,7 +88,7 @@ pub struct Metadata {
     pub cover_resource_id: Option<i64>,
     /// 字段来源表; 键是字段名, 值是来源标识.
     pub field_sources: Option<Json<FieldSources>>,
-    /// 分类. 按来源整份取首个非空, 不混拼.
+    /// 题材. 按来源整份取首个非空, 不混拼.
     pub genres: Option<Json<Genres>>,
     /// 用户备注, 只有人工写入.
     pub note: Option<String>,
@@ -136,9 +136,9 @@ impl From<BTreeMap<String, String>> for FieldSources {
     }
 }
 
-/// 分类列表.
+/// 题材列表.
 ///
-/// 与演员分开: 分类没有顺序语义, 也不参与逐项修订, 存成一列 JSON 数组即可.
+/// 与演员分开: 题材没有顺序语义, 也不参与逐项修订, 存成一列 JSON 数组即可.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Genres(Vec<String>);
@@ -220,7 +220,7 @@ pub struct MetadataInput<'a> {
     pub poster_url: Option<&'a str>,
     /// 横版封面 (剧照) 的远端地址.
     pub cover_url: Option<&'a str>,
-    /// `None` 表示本次不改动分类; `Some` 表示整体替换, 空列表即清空.
+    /// `None` 表示本次不改动题材; `Some` 表示整体替换, 空列表即清空.
     pub genres: Option<&'a [String]>,
     /// `None` 表示本次不改动演员名单; `Some` 表示整体替换, 空列表即清空.
     pub actors: Option<&'a [String]>,
@@ -855,7 +855,7 @@ impl MetadataRepository {
         Ok(())
     }
 
-    /// 全部出现过的分类, 按名称排序. 筛选下拉框据此给出可选项.
+    /// 全部出现过的题材, 按名称排序. 筛选下拉框据此给出可选项.
     pub async fn genre_options(&self) -> Result<Vec<String>, RepositoryError> {
         let rows: Vec<(String,)> = sqlx::query_as(
             "SELECT DISTINCT json_each.value FROM metadata, json_each(metadata.genres) \
@@ -1235,7 +1235,7 @@ mod tests {
             .upsert(&number, &MetadataInput::default())
             .await
             .expect("应写入成功");
-        // 旧版本的载荷把分类写作 `tags`, 也没有 `cover_url`; 读端必须仍能解出.
+        // 旧版本的载荷把题材写作 `tags`, 也没有 `cover_url`; 读端必须仍能解出.
         sqlx::query(
             "INSERT INTO source_snapshot (metadata_id, source_id, payload, fetched_at) \
              VALUES (?1, ?2, ?3, ?4)",
