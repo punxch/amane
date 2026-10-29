@@ -151,10 +151,16 @@ fn default_content_routes() -> BTreeMap<ContentType, Vec<String>> {
 
     [
         (ContentType::Censored, chain(&["dmm", "javdb", "javbus"])),
-        (ContentType::Uncensored, chain(&["javdb", "javbus"])),
-        (ContentType::Fc2, chain(&["javdb"])),
+        (
+            ContentType::Uncensored,
+            chain(&["javdb", "javbus", "avsox"]),
+        ),
+        (ContentType::Fc2, chain(&["javdb", "fc2"])),
         (ContentType::Chinese, chain(&["javdb"])),
-        (ContentType::Amateur, chain(&["dmm", "javdb", "javbus"])),
+        (
+            ContentType::Amateur,
+            chain(&["mgstage", "dmm", "javdb", "javbus"]),
+        ),
         (ContentType::Western, chain(&["javdb"])),
         (ContentType::Hentai, chain(&["dmm", "javdb"])),
     ]
@@ -379,7 +385,7 @@ mod tests {
     use crate::content_type::ContentType;
 
     /// 已实现的来源标识. 默认链与校验都按这一份走.
-    const KNOWN: &[&str] = &["dmm", "javdb", "javbus"];
+    const KNOWN: &[&str] = &["dmm", "javdb", "javbus", "mgstage", "fc2", "avsox"];
 
     fn routes_with(content_type: ContentType, chain: &[&str]) -> ContentRoutes {
         let mut routes = ContentRoutes::default();

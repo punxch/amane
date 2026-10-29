@@ -6,18 +6,24 @@
 mod dom;
 
 pub mod aggregate;
+pub mod avsox;
 pub mod dmm;
+pub mod fc2;
 pub mod javbus;
 pub mod javdb;
+pub mod mgstage;
 pub mod number;
 
 pub use aggregate::{Aggregated, aggregate};
 /// 来源返回的元数据由内核定义: 分站快照要按同一份结构落库.
 pub use amane_core::ScrapedMetadata;
 pub use amane_net::Rate;
+pub use avsox::AvsoxSource;
 pub use dmm::DmmSource;
+pub use fc2::Fc2Source;
 pub use javbus::JavbusSource;
 pub use javdb::JavdbSource;
+pub use mgstage::MgstageSource;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -140,7 +146,10 @@ impl Registry {
         Self::new(vec![
             Box::new(DmmSource::new(Arc::clone(&client))),
             Box::new(JavdbSource::new(Arc::clone(&client))),
-            Box::new(JavbusSource::new(client)),
+            Box::new(JavbusSource::new(Arc::clone(&client))),
+            Box::new(MgstageSource::new(Arc::clone(&client))),
+            Box::new(Fc2Source::new(Arc::clone(&client))),
+            Box::new(AvsoxSource::new(client)),
         ])
     }
 
@@ -366,7 +375,7 @@ mod tests {
 
         assert_eq!(
             registry.known_ids(),
-            ["dmm", "javdb", "javbus"],
+            ["dmm", "javdb", "javbus", "mgstage", "fc2", "avsox"],
             "内置来源全部登记在册"
         );
         assert!(
