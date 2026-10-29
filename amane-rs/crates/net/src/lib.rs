@@ -3,5 +3,5 @@
 pub mod client;
 pub mod limiter;
 
-pub use client::{Fingerprint, NetError, WebClient};
+pub use client::{Fingerprint, NetError, RequestOptions, WebClient};
 pub use limiter::{Rate, RateLimiters};

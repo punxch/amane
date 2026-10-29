@@ -2,9 +2,12 @@
 //!
 //! 目标不是精确的流量整形, 而是把同一站点的并发压到不会触发封禁的程度:
 //! 容量即突发上限, 之后按固定间隔匀速补充.
+//!
+//! 速率表可在运行期整体替换: 来源在编译期声明自己的速率, 配置再按 host 覆盖,
+//! 两者都变化于进程启动之后, 因此不能只留一个构造期入参.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 /// 单个 host 的速率.
@@ -30,6 +33,26 @@ impl Rate {
             interval,
         }
     }
+
+    /// 每秒整数次的常量构造, 供来源在静态声明里写速率.
+    pub const fn each_second(burst: u32, per_second: u32) -> Self {
+        let per_second = if per_second == 0 { 1 } else { per_second };
+        Self {
+            burst: if burst == 0 { 1 } else { burst },
+            interval: Duration::from_millis(1000 / per_second as u64),
+        }
+    }
+
+    /// 两份速率里更保守的一份: 间隔取大, 突发取小.
+    ///
+    /// 同一 host 上有多个来源时用得上 —— 谁更慢就按谁走, 否则快的那份会让站点看到
+    /// 一个它没答应的频率.
+    pub fn slower(self, other: Self) -> Self {
+        Self {
+            burst: self.burst.min(other.burst),
+            interval: self.interval.max(other.interval),
+        }
+    }
 }
 
 /// 一次取令牌的结果.
@@ -48,28 +71,62 @@ struct Bucket {
 /// 按 host 分桶的限速器.
 #[derive(Debug)]
 pub struct RateLimiters {
-    default: Rate,
-    overrides: HashMap<String, Rate>,
+    /// 未单独声明的 host 使用的速率; 图片 CDN 一类不经过来源的地址落在它上面.
+    default: RwLock<Rate>,
+    overrides: RwLock<HashMap<String, Rate>>,
     buckets: Mutex<HashMap<String, Bucket>>,
 }
 
 impl RateLimiters {
     pub fn new(default: Rate) -> Self {
+        Self::with_table(default, HashMap::new())
+    }
+
+    /// 以一份完整的 host 速率表构造.
+    pub fn with_table(default: Rate, table: HashMap<String, Rate>) -> Self {
         Self {
-            default,
-            overrides: HashMap::new(),
+            default: RwLock::new(default),
+            overrides: RwLock::new(table),
             buckets: Mutex::new(HashMap::new()),
         }
     }
 
     /// 为特定 host 覆盖默认速率.
     pub fn with_override(mut self, host: impl Into<String>, rate: Rate) -> Self {
-        self.overrides.insert(host.into(), rate);
+        let table = self
+            .overrides
+            .get_mut()
+            .unwrap_or_else(|error| error.into_inner());
+        table.insert(host.into(), rate);
         self
     }
 
+    /// 整体替换速率表.
+    ///
+    /// 已建立的桶保留令牌数, 下一次取令牌即按新速率补充, 因此换表不需要重建客户端.
+    pub fn replace(&self, default: Rate, table: HashMap<String, Rate>) {
+        *self
+            .default
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = default;
+        *self
+            .overrides
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = table;
+    }
+
     fn rate_for(&self, host: &str) -> Rate {
-        self.overrides.get(host).copied().unwrap_or(self.default)
+        self.overrides
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(host)
+            .copied()
+            .unwrap_or_else(|| {
+                *self
+                    .default
+                    .read()
+                    .unwrap_or_else(|error| error.into_inner())
+            })
     }
 
     /// 取得一个令牌, 不足时等待.
@@ -113,6 +170,7 @@ impl RateLimiters {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::time::{Duration, Instant};
 
     use super::{Rate, RateLimiters};
@@ -186,6 +244,36 @@ mod tests {
         assert!(
             started.elapsed() >= Duration::from_millis(400),
             "覆盖速率应生效, 实际 {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn slower_takes_the_more_conservative_side() {
+        let slow = Rate::each_second(1, 1);
+        let fast = Rate::each_second(5, 20);
+
+        let merged = slow.slower(fast);
+
+        assert_eq!(merged.burst, 1, "突发取小");
+        assert_eq!(merged.interval, Duration::from_secs(1), "间隔取大");
+        assert_eq!(merged, fast.slower(slow), "与顺序无关");
+    }
+
+    #[tokio::test]
+    async fn replaced_table_applies_to_later_requests() {
+        let limiters = RateLimiters::new(Rate::per_second(5, 100.0));
+        let mut table = HashMap::new();
+        table.insert("slow.example".to_owned(), Rate::each_second(1, 2));
+        limiters.replace(Rate::per_second(5, 100.0), table);
+
+        let started = Instant::now();
+        limiters.acquire("slow.example").await;
+        limiters.acquire("slow.example").await;
+
+        assert!(
+            started.elapsed() >= Duration::from_millis(400),
+            "换表后新速率应生效, 实际 {:?}",
             started.elapsed()
         );
     }

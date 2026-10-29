@@ -832,7 +832,11 @@ mod tests {
             .iter()
             .filter_map(|item| item["id"].as_str())
             .collect();
-        assert_eq!(ids, ["dmm", "javdb"], "停用不等于从登记表里消失");
+        assert_eq!(
+            ids,
+            ["dmm", "javdb", "javbus"],
+            "停用不等于从登记表里消失"
+        );
     }
 
     #[tokio::test]
@@ -1176,7 +1180,7 @@ mod tests {
             .iter()
             .filter_map(|item| item["id"].as_str())
             .collect();
-        assert_eq!(ids, ["dmm", "javdb"]);
+        assert_eq!(ids, ["dmm", "javdb", "javbus"]);
     }
 
     #[tokio::test]

@@ -493,6 +493,8 @@ pub struct HotSettingsDto {
     pub request_timeout_secs: u32,
     /// 每类影片的来源链; 键是类型标识, 值是有序来源标识.
     pub content_routes: BTreeMap<String, Vec<String>>,
+    /// 按 host 覆盖出站速率; 键是主机名, 值是每秒请求数.
+    pub host_rates: BTreeMap<String, f64>,
     pub scan: ScanSettingsDto,
     pub organize: OrganizeSettingsDto,
 }
@@ -532,6 +534,7 @@ impl SettingsDto {
                     .entries()
                     .map(|(content_type, chain)| (content_type.as_str().to_owned(), chain.to_vec()))
                     .collect(),
+                host_rates: value.hot.host_rates.clone(),
                 scan: ScanSettingsDto {
                     media_extensions: value.hot.scan.media_extensions.clone(),
                     min_file_size: value.hot.scan.min_file_size,
@@ -565,6 +568,7 @@ impl UpdateConfigRequest {
                             .map(|content_type| (content_type, chain.clone()))
                     }),
                 ),
+                host_rates: self.hot.host_rates,
                 scan: amane_core::config::ScanSettings {
                     media_extensions: self.hot.scan.media_extensions,
                     min_file_size: self.hot.scan.min_file_size,

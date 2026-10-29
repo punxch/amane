@@ -256,6 +256,8 @@ mod tests {
                 id,
                 label: id,
                 base_url: "https://example.invalid",
+                host: "example.invalid",
+                rate: amane_crawlers::Rate::each_second(1, 1),
                 capabilities: &[Capability::Metadata],
             },
             outcome,

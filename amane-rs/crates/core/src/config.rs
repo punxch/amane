@@ -41,6 +41,11 @@ pub struct HotSettings {
     /// 每类影片的来源链; 链上顺序即字段优先级.
     #[schemars(extend("x-widget" = "content-routes"))]
     pub content_routes: ContentRoutes,
+    /// 按 host 覆盖出站速率: 键是主机名, 值是每秒请求数.
+    ///
+    /// 优先级高于来源自己声明的速率. 覆盖后突发上限按 1 处理, 即严格匀速 —— 被限流时
+    /// 用户要的是「放慢」, 不是「还能瞬间打一串」.
+    pub host_rates: BTreeMap<String, f64>,
     /// 扫描规则: 媒体扩展名、大小阈值与文件黑名单.
     pub scan: ScanSettings,
     /// 整理规则: 目标路径模板.
@@ -53,6 +58,7 @@ impl Default for HotSettings {
             concurrency: 4,
             request_timeout_secs: 20,
             content_routes: ContentRoutes::default(),
+            host_rates: BTreeMap::new(),
             scan: ScanSettings::default(),
             organize: OrganizeSettings::default(),
         }
@@ -144,11 +150,11 @@ fn default_content_routes() -> BTreeMap<ContentType, Vec<String>> {
     let chain = |ids: &[&str]| ids.iter().map(|id| (*id).to_owned()).collect::<Vec<_>>();
 
     [
-        (ContentType::Censored, chain(&["dmm", "javdb"])),
-        (ContentType::Uncensored, chain(&["javdb"])),
+        (ContentType::Censored, chain(&["dmm", "javdb", "javbus"])),
+        (ContentType::Uncensored, chain(&["javdb", "javbus"])),
         (ContentType::Fc2, chain(&["javdb"])),
         (ContentType::Chinese, chain(&["javdb"])),
-        (ContentType::Amateur, chain(&["dmm", "javdb"])),
+        (ContentType::Amateur, chain(&["dmm", "javdb", "javbus"])),
         (ContentType::Western, chain(&["javdb"])),
         (ContentType::Hentai, chain(&["dmm", "javdb"])),
     ]
@@ -287,9 +293,39 @@ impl HotSettings {
         )?;
 
         self.content_routes.validate(known_sources)?;
+        self.validate_host_rates()?;
 
         self.scan.validate()?;
         self.organize.validate()
+    }
+
+    /// 速率覆盖必须能构成一个可用的令牌桶: 主机名非空, 每秒次数为正数.
+    ///
+    /// 零或负的速率会让限速器退化成「每秒一个」, 用户以为放慢了却得到默认值; 负的还会
+    /// 让等待时长算成零, 直接变成不限速.
+    fn validate_host_rates(&self) -> Result<(), ConfigError> {
+        for (host, per_second) in &self.host_rates {
+            if host.trim().is_empty() {
+                return Err(ConfigError::BadValue {
+                    field: "host_rates",
+                    reason: "主机名不能为空".to_owned(),
+                });
+            }
+            if host.contains('/') || host.contains(':') {
+                return Err(ConfigError::BadValue {
+                    field: "host_rates",
+                    reason: format!("{host:?} 应是主机名, 不带协议与路径"),
+                });
+            }
+            if !per_second.is_finite() || *per_second <= 0.0 {
+                return Err(ConfigError::BadValue {
+                    field: "host_rates",
+                    reason: format!("{host} 的每秒请求数应为正数, 当前是 {per_second}"),
+                });
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -335,10 +371,15 @@ pub enum ConfigError {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::{
         ConfigError, ContentRoutes, HotSettings, OrganizeSettings, ScanSettings, Settings,
     };
     use crate::content_type::ContentType;
+
+    /// 已实现的来源标识. 默认链与校验都按这一份走.
+    const KNOWN: &[&str] = &["dmm", "javdb", "javbus"];
 
     fn routes_with(content_type: ContentType, chain: &[&str]) -> ContentRoutes {
         let mut routes = ContentRoutes::default();
@@ -430,7 +471,7 @@ mod tests {
             ..HotSettings::default()
         };
 
-        assert!(settings.validate(&["dmm", "javdb"]).is_ok());
+        assert!(settings.validate(KNOWN).is_ok());
     }
 
     #[test]
@@ -449,7 +490,7 @@ mod tests {
                 ..HotSettings::default()
             };
             let error = settings
-                .validate(&["dmm", "javdb"])
+                .validate(KNOWN)
                 .expect_err(&format!("{field}={concurrency}/{timeout} 应被拒绝"));
 
             match error {
@@ -466,7 +507,7 @@ mod tests {
             ..HotSettings::default()
         };
 
-        match settings.validate(&["dmm", "javdb"]) {
+        match settings.validate(KNOWN) {
             Err(ConfigError::UnknownSource(name)) => assert_eq!(name, "nowhere"),
             other => panic!("应为未知来源错误, 实际 {other:?}"),
         }
@@ -476,7 +517,7 @@ mod tests {
     fn content_routes_reject_empty_chain() {
         let routes = routes_with(ContentType::Censored, &[]);
 
-        match routes.validate(&["dmm", "javdb"]) {
+        match routes.validate(KNOWN) {
             Err(ConfigError::BadValue { reason, .. }) => {
                 assert!(reason.contains("有码"), "应指出是哪一类, 实际 {reason}");
             }
@@ -513,9 +554,62 @@ mod tests {
     fn default_content_routes_reference_implemented_sources() {
         // 默认链里出现未实现的来源, 会让默认配置自己就存不回去.
         assert!(
-            ContentRoutes::default().validate(&["dmm", "javdb"]).is_ok(),
+            ContentRoutes::default().validate(KNOWN).is_ok(),
             "默认链只列已实现的来源"
         );
+    }
+
+    #[test]
+    fn default_routes_give_every_type_a_source() {
+        for (content_type, chain) in ContentRoutes::default().entries() {
+            assert!(
+                !chain.is_empty(),
+                "{} 的默认链不能为空",
+                content_type.label()
+            );
+        }
+    }
+
+    #[test]
+    fn host_rates_reject_unusable_values() {
+        let cases = [
+            ("", 1.0, "主机名"),
+            ("https://javdb.com", 1.0, "主机名"),
+            ("javdb.com", 0.0, "正数"),
+            ("javdb.com", -1.0, "正数"),
+        ];
+
+        for (host, per_second, expected) in cases {
+            let mut rates = BTreeMap::new();
+            rates.insert(host.to_owned(), per_second);
+            let settings = HotSettings {
+                host_rates: rates,
+                ..HotSettings::default()
+            };
+
+            match settings.validate(KNOWN) {
+                Err(ConfigError::BadValue { field, reason }) => {
+                    assert_eq!(field, "host_rates");
+                    assert!(
+                        reason.contains(expected),
+                        "{host}={per_second} 的说明应提到{expected}, 实际 {reason}"
+                    );
+                }
+                other => panic!("{host}={per_second} 应被拒绝, 实际 {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn host_rates_accept_positive_values() {
+        let mut rates = BTreeMap::new();
+        rates.insert("javdb.com".to_owned(), 0.5);
+        let settings = HotSettings {
+            host_rates: rates,
+            ..HotSettings::default()
+        };
+
+        assert!(settings.validate(KNOWN).is_ok());
     }
 
     #[test]

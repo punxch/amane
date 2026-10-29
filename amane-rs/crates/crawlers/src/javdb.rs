@@ -5,9 +5,9 @@ use std::sync::Arc;
 use amane_core::MediaNumber;
 use amane_net::{NetError, WebClient};
 use async_trait::async_trait;
-use chrono::NaiveDate;
 use scraper::{Html, Selector};
 
+use crate::dom::{non_empty, parse_date, parse_minutes, text_of};
 use crate::{Capability, RawBody, ScrapedMetadata, Source, SourceDescriptor, SourceError};
 
 pub const HOST: &str = "javdb.com";
@@ -59,6 +59,8 @@ static DESCRIPTOR: SourceDescriptor = SourceDescriptor {
     id: ID,
     label: "JavDB",
     base_url: "https://javdb.com",
+    host: HOST,
+    rate: amane_net::Rate::each_second(1, 1),
     capabilities: &[Capability::Metadata],
 };
 
@@ -237,35 +239,12 @@ fn cover_images(document: &Html) -> (Option<String>, Option<String>) {
     (poster, cover)
 }
 
-fn text_of(element: &scraper::ElementRef<'_>) -> String {
-    element
-        .text()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 fn element_texts(element: &scraper::ElementRef<'_>, selector: &Selector) -> Vec<String> {
     element
         .select(selector)
         .map(|link| text_of(&link))
         .filter(|text| !text.is_empty())
         .collect()
-}
-
-fn non_empty(value: String) -> Option<String> {
-    (!value.is_empty()).then_some(value)
-}
-
-fn parse_date(value: &str) -> Option<NaiveDate> {
-    NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d").ok()
-}
-
-fn parse_minutes(value: &str) -> Option<i32> {
-    let digits: String = value.chars().filter(char::is_ascii_digit).collect();
-    digits.parse::<i32>().ok().filter(|minutes| *minutes > 0)
 }
 
 #[cfg(test)]

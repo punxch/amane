@@ -4,13 +4,64 @@ use std::time::Duration;
 
 use tokio::sync::RwLock;
 use url::Url;
-use wreq::Client;
+use wreq::header::{HeaderMap, HeaderName, HeaderValue};
+use wreq::{Client, Response};
 use wreq_util::{Emulation, Platform, Profile};
 
 use crate::limiter::RateLimiters;
 
 /// 上游拒绝请求时返回的状态.
 const REJECTED: &[u16] = &[403, 429, 503];
+
+/// 单次请求附加的头.
+///
+/// 站点要求的 cookie、语言头与来源头放在这里: 客户端只负责把它们发出去, 不感知是哪一家站点.
+/// 同名头以最后一次写入为准, 因此调用方可以「先给站点默认值, 再覆盖个别头」.
+#[derive(Debug, Clone, Default)]
+pub struct RequestOptions {
+    headers: Vec<(String, String)>,
+}
+
+impl RequestOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 追加一个请求头.
+    pub fn header(mut self, name: &str, value: impl Into<String>) -> Self {
+        let name = name.to_ascii_lowercase();
+        let value = value.into();
+        match self.headers.iter_mut().find(|(key, _)| *key == name) {
+            Some(existing) => existing.1 = value,
+            None => self.headers.push((name, value)),
+        }
+        self
+    }
+
+    /// `Cookie` 头.
+    pub fn cookie(self, value: impl Into<String>) -> Self {
+        self.header("cookie", value)
+    }
+
+    /// 转成可发送的头表. 无法构成合法头值的项被丢弃并记一条警告: 这类值来自站点令牌,
+    /// 出了问题要能从日志里看出是哪一项没发出去.
+    fn to_map(&self) -> HeaderMap {
+        let mut map = HeaderMap::with_capacity(self.headers.len());
+        for (name, value) in &self.headers {
+            let Ok(name) = HeaderName::from_bytes(name.as_bytes()) else {
+                tracing::warn!(header = %name, "请求头名称不合法, 已跳过");
+                continue;
+            };
+            match HeaderValue::from_str(value) {
+                Ok(value) => {
+                    map.insert(name, value);
+                }
+                Err(_) => tracing::warn!(header = %name, "请求头的值不合法, 已跳过"),
+            }
+        }
+        map
+    }
+}
 
 /// 浏览器档位. 被拒时按顺序轮换到下一个.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,8 +173,22 @@ impl WebClient {
             .unwrap_or_else(|error| error.into_inner())
     }
 
+    /// 出站限速表. 装配层据此按来源声明与配置重设速率.
+    pub fn limiters(&self) -> &RateLimiters {
+        &self.limiters
+    }
+
     pub async fn get_text(&self, url: &str) -> Result<String, NetError> {
-        let response = self.get(url).await?;
+        self.get_text_with(url, &RequestOptions::default()).await
+    }
+
+    /// 带请求头取回正文.
+    pub async fn get_text_with(
+        &self,
+        url: &str,
+        options: &RequestOptions,
+    ) -> Result<String, NetError> {
+        let response = self.get_with(url, options).await?;
         // 非成功状态不是正文: 把 5xx 错误页当页面解析, 会变成「结构读不懂」而不是「请求失败」.
         ensure_success(url, &response)?;
         response
@@ -132,8 +197,17 @@ impl WebClient {
             .map_err(|error| request_error(url, &error))
     }
 
-    pub async fn get(&self, url: &str) -> Result<wreq::Response, NetError> {
-        self.execute(url, None).await
+    pub async fn get(&self, url: &str) -> Result<Response, NetError> {
+        self.get_with(url, &RequestOptions::default()).await
+    }
+
+    /// 需要按状态码分支的调用方直接用这个: 非成功状态原样返回.
+    pub async fn get_with(
+        &self,
+        url: &str,
+        options: &RequestOptions,
+    ) -> Result<Response, NetError> {
+        self.execute(url, None, options).await
     }
 
     /// 取回原始字节与上游声明的类型. 非成功状态视为失败.
@@ -157,7 +231,18 @@ impl WebClient {
     ///
     /// 返回文本而不是已解析的值: 调用方在解码失败时需要保留原文, 而客户端解析产生的错误只带说明.
     pub async fn post_text(&self, url: &str, body: &serde_json::Value) -> Result<String, NetError> {
-        let response = self.execute(url, Some(body)).await?;
+        self.post_text_with(url, body, &RequestOptions::default())
+            .await
+    }
+
+    /// 带请求头以 JSON 请求体发送. 请求体是数组时同样适用.
+    pub async fn post_text_with(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+        options: &RequestOptions,
+    ) -> Result<String, NetError> {
+        let response = self.execute(url, Some(body), options).await?;
         ensure_success(url, &response)?;
         response
             .text()
@@ -169,8 +254,10 @@ impl WebClient {
         &self,
         url: &str,
         body: Option<&serde_json::Value>,
-    ) -> Result<wreq::Response, NetError> {
+        options: &RequestOptions,
+    ) -> Result<Response, NetError> {
         let host = host_of(url)?;
+        let headers = options.to_map();
         let mut attempts = 0;
 
         loop {
@@ -182,6 +269,11 @@ impl WebClient {
             let request = match body {
                 Some(body) => client.post(url).json(body),
                 None => client.get(url),
+            };
+            let request = if headers.is_empty() {
+                request
+            } else {
+                request.headers(headers.clone())
             };
             let started = std::time::Instant::now();
             let response = request
@@ -237,7 +329,7 @@ fn build(timeout: Duration, profile: Fingerprint) -> Result<Client, NetError> {
 }
 
 /// 便捷方法要求成功状态; 需要按状态码分支的调用方直接用 `get`.
-fn ensure_success(url: &str, response: &wreq::Response) -> Result<(), NetError> {
+fn ensure_success(url: &str, response: &Response) -> Result<(), NetError> {
     let status = response.status();
     if status.is_success() {
         return Ok(());

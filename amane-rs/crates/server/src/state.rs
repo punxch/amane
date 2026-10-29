@@ -15,6 +15,11 @@ use amane_runtime::{
     AssetsHandler, CleanupHandler, OrganizeHandler, ResourceStore, ScanHandler, ScrapeHandler,
 };
 
+/// 未声明速率的 host 用的兜底速率.
+///
+/// 图片 CDN 一类地址不经过来源, 也就没有声明; 它们仍要走同一份限速表.
+const UNDECLARED_HOST_RATE: Rate = Rate::each_second(2, 1);
+
 /// 启动失败的原因.
 #[derive(Debug, thiserror::Error)]
 pub enum BootError {
@@ -72,24 +77,28 @@ impl Runtime {
         }
 
         // 限速器先于客户端构造: 客户端持有分桶状态, 反过来无法通过编译.
-        let limiters = RateLimiters::new(Rate::per_second(2, 1.0))
-            .with_override(amane_crawlers::dmm::HOST, Rate::per_second(2, 2.0));
+        // 来源的速率声明要等登记表建好才读得到, 因此先用兜底速率建客户端, 随后整表替换.
         let client = WebClient::new(
             Duration::from_secs(u64::from(settings.hot.request_timeout_secs)),
-            limiters,
+            RateLimiters::new(UNDECLARED_HOST_RATE),
         )
         .map_err(|error| BootError::Network(error.to_string()))?;
 
         let client = Arc::new(client);
+        let registry = Registry::builtin(Arc::clone(&client));
+        // 同一 host 上有多个来源时取更保守的速率; 配置里的覆盖优先于来源声明.
+        client.limiters().replace(
+            UNDECLARED_HOST_RATE,
+            registry.outbound_rates(&settings.hot.host_rates),
+        );
+        // 热配置里的类型路由决定每类影片问哪些来源, 链上顺序即聚合优先级.
+        registry.apply_routes(&settings.hot.content_routes);
+        let sources = Arc::new(registry);
         let resources = Arc::new(ResourceStore::new(
             settings.cold.data_dir.join("resources"),
             ResourceRepository::new(database.clone()),
             Arc::clone(&client),
         ));
-        let registry = Registry::builtin(Arc::clone(&client));
-        // 热配置里的类型路由决定每类影片问哪些来源, 链上顺序即聚合优先级.
-        registry.apply_routes(&settings.hot.content_routes);
-        let sources = Arc::new(registry);
         let libraries = LibraryRepository::new(database.clone());
         let organize = OrganizeRepository::new(database.clone());
         let settings = Arc::new(ArcSwap::from_pointee(settings));
@@ -188,6 +197,14 @@ impl Runtime {
         if incoming.hot.content_routes != self.settings().hot.content_routes {
             self.sources.apply_routes(&incoming.hot.content_routes);
             applied.push("content_routes".to_owned());
+        }
+        if incoming.hot.host_rates != self.settings().hot.host_rates {
+            // 换表不重建客户端: 已建立的桶保留令牌数, 下一次取令牌即按新速率补充.
+            self.client.limiters().replace(
+                UNDECLARED_HOST_RATE,
+                self.sources.outbound_rates(&incoming.hot.host_rates),
+            );
+            applied.push("host_rates".to_owned());
         }
         if incoming.hot.concurrency != self.settings().hot.concurrency {
             self.tasks

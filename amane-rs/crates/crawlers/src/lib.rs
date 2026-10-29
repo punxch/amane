@@ -3,17 +3,23 @@
 //! 来源全部编译进二进制, 不加载外部插件. 新增站点只需实现 [`Source`] 并登记到 [`Registry`],
 //! 宿主与前端不感知具体站点.
 
+mod dom;
+
 pub mod aggregate;
 pub mod dmm;
+pub mod javbus;
 pub mod javdb;
+pub mod number;
 
 pub use aggregate::{Aggregated, aggregate};
 /// 来源返回的元数据由内核定义: 分站快照要按同一份结构落库.
 pub use amane_core::ScrapedMetadata;
+pub use amane_net::Rate;
 pub use dmm::DmmSource;
+pub use javbus::JavbusSource;
 pub use javdb::JavdbSource;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::RwLock;
 
@@ -42,6 +48,10 @@ pub struct SourceDescriptor {
     pub id: &'static str,
     pub label: &'static str,
     pub base_url: &'static str,
+    /// 请求实际打到的主机名. 与 `base_url` 分开: 站点换域名时速率仍按同一台主机算.
+    pub host: &'static str,
+    /// 站点能承受的出站速率. 装配层据此建限速表, 配置可再按 host 覆盖.
+    pub rate: Rate,
     pub capabilities: &'static [Capability],
 }
 
@@ -129,8 +139,35 @@ impl Registry {
     pub fn builtin(client: Arc<WebClient>) -> Self {
         Self::new(vec![
             Box::new(DmmSource::new(Arc::clone(&client))),
-            Box::new(JavdbSource::new(client)),
+            Box::new(JavdbSource::new(Arc::clone(&client))),
+            Box::new(JavbusSource::new(client)),
         ])
+    }
+
+    /// 每个 host 的出站速率.
+    ///
+    /// 同一 host 上有多个来源时取更保守的一份: 站点只看到一台主机, 快的那份会让它收到没答应的频率.
+    /// 配置里的覆盖按 host 生效, 优先级高于来源声明 —— 被限流时用户要能临时放慢.
+    pub fn outbound_rates(&self, overrides: &BTreeMap<String, f64>) -> HashMap<String, Rate> {
+        let mut rates: BTreeMap<&'static str, Rate> = BTreeMap::new();
+        for source in &self.all {
+            let descriptor = source.descriptor();
+            rates
+                .entry(descriptor.host)
+                .and_modify(|current| *current = current.slower(descriptor.rate))
+                .or_insert(descriptor.rate);
+        }
+
+        let mut table: HashMap<String, Rate> = rates
+            .into_iter()
+            .map(|(host, rate)| (host.to_owned(), rate))
+            .collect();
+        for (host, per_second) in overrides {
+            // 覆盖只给每秒次数: 突发上限跟着变成 1, 即严格匀速, 这是「放慢」的语义.
+            table.insert(host.clone(), Rate::per_second(1, *per_second));
+        }
+
+        table
     }
 
     /// 全部已登记的来源标识, 与当前路由无关.
@@ -188,9 +225,12 @@ impl Registry {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::{Capability, Registry, ScrapedMetadata, Source, SourceDescriptor};
     use amane_core::config::ContentRoutes;
     use amane_core::{ContentType, MediaNumber};
+    use amane_net::Rate;
     use async_trait::async_trait;
 
     struct StubSource {
@@ -216,11 +256,22 @@ mod tests {
     }
 
     fn stub(id: &'static str, capabilities: &'static [Capability]) -> Box<dyn Source> {
+        stub_on(id, "example.invalid", Rate::each_second(1, 1), capabilities)
+    }
+
+    fn stub_on(
+        id: &'static str,
+        host: &'static str,
+        rate: Rate,
+        capabilities: &'static [Capability],
+    ) -> Box<dyn Source> {
         Box::new(StubSource {
             descriptor: SourceDescriptor {
                 id,
                 label: id,
                 base_url: "https://example.invalid",
+                host,
+                rate,
                 capabilities,
             },
             title: id,
@@ -315,12 +366,71 @@ mod tests {
 
         assert_eq!(
             registry.known_ids(),
-            ["dmm", "javdb"],
+            ["dmm", "javdb", "javbus"],
             "内置来源全部登记在册"
         );
         assert!(
             registry.chain_for(ContentType::Censored).is_empty(),
             "未应用路由前没有任何类型有链"
+        );
+    }
+
+    #[test]
+    fn same_host_takes_the_more_conservative_rate() {
+        let registry = Registry::new(vec![
+            stub_on(
+                "fast",
+                "shared.example",
+                Rate::each_second(4, 8),
+                &[Capability::Metadata],
+            ),
+            stub_on(
+                "slow",
+                "shared.example",
+                Rate::each_second(1, 1),
+                &[Capability::Metadata],
+            ),
+        ]);
+
+        let rates = registry.outbound_rates(&BTreeMap::new());
+
+        assert_eq!(
+            rates.get("shared.example"),
+            Some(&Rate::each_second(1, 1)),
+            "同一 host 取更保守的一份"
+        );
+    }
+
+    #[test]
+    fn configuration_override_beats_declaration() {
+        let registry = Registry::new(vec![stub_on(
+            "fast",
+            "fast.example",
+            Rate::each_second(4, 8),
+            &[Capability::Metadata],
+        )]);
+        let mut overrides = BTreeMap::new();
+        overrides.insert("fast.example".to_owned(), 0.5);
+
+        let rates = registry.outbound_rates(&overrides);
+
+        assert_eq!(
+            rates.get("fast.example"),
+            Some(&Rate::per_second(1, 0.5)),
+            "配置覆盖优先于来源声明"
+        );
+    }
+
+    #[test]
+    fn hosts_without_declaration_are_absent_from_the_table() {
+        let registry = Registry::new(vec![stub("only", &[Capability::Metadata])]);
+
+        let rates = registry.outbound_rates(&BTreeMap::new());
+
+        assert_eq!(rates.len(), 1, "只登记声明过的 host");
+        assert!(
+            !rates.contains_key("cdn.example"),
+            "未声明的 host 落到默认速率, 不凭空出现"
         );
     }
 }
