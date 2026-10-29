@@ -40,15 +40,16 @@ impl Source for JavdbSource {
             .get_text(&search_url)
             .await
             .map_err(transport_error)?;
+        reject_blocked(&search)?;
 
         let path = first_result_path(&search, number)?;
-
         let detail_url = format!("https://{HOST}{path}");
         let detail = self
             .client
             .get_text(&detail_url)
             .await
             .map_err(transport_error)?;
+        reject_blocked(&detail)?;
 
         parse_detail(&detail, number)
     }
@@ -66,6 +67,18 @@ fn transport_error(error: NetError) -> SourceError {
         id: ID,
         message: error.to_string(),
     }
+}
+
+/// 地区封锁页的识别标记. 站点按出口 IP 拒绝时返回一个短页, 不是影片页也不是「暂无内容」.
+const BLOCK_MARKERS: &[&str] = &["prohibited in the country", "版權限制", "版权限制"];
+
+/// 把封锁页认成「没有结果列表」会让人去修一个没坏的解析器.
+fn reject_blocked(html: &str) -> Result<(), SourceError> {
+    if BLOCK_MARKERS.iter().any(|marker| html.contains(marker)) {
+        return Err(SourceError::Blocked { id: ID });
+    }
+
+    Ok(())
 }
 
 fn urlencode(value: &str) -> String {
@@ -259,7 +272,7 @@ fn parse_minutes(value: &str) -> Option<i32> {
 mod tests {
     use amane_core::MediaNumber;
 
-    use super::{first_result_path, parse_detail, urlencode};
+    use super::{first_result_path, parse_detail, reject_blocked, urlencode};
 
     const SEARCH: &str = r#"
         <div class="movie-list">
@@ -274,6 +287,13 @@ mod tests {
 
     /// 既没有结果列表也没有提示, 通常是拦截页或改版.
     const CHALLENGE: &str = r#"<html><body><h1>Just a moment...</h1></body></html>"#;
+
+    /// 地区封锁页: 站点按出口 IP 拒绝, 正文只有一句版权说明.
+    const BLOCKED: &str = r#"<html><body>
+        Due to copyright restrictions, access to this site is prohibited in the country where your internet is located.
+        <br /><br />
+        由於版權限制，本站禁止了你的網路所在國家的訪問。
+    </body></html>"#;
 
     const DETAIL: &str = r#"
         <div class="video-detail">
@@ -320,6 +340,30 @@ mod tests {
             matches!(result, Err(super::SourceError::NotFound { .. })),
             "站点明确表示暂无内容时应报未收录"
         );
+    }
+
+    #[test]
+    fn blocked_page_is_reported_as_blocked() {
+        let error = reject_blocked(BLOCKED).expect_err("封锁页应报地区封锁");
+
+        assert!(
+            matches!(error, super::SourceError::Blocked { .. }),
+            "封锁页不能混进解析失败, 实际 {error:?}"
+        );
+        assert!(
+            error.to_string().contains("地区封锁"),
+            "说明应指出换出口即可解决, 实际 {error}"
+        );
+    }
+
+    #[test]
+    fn ordinary_pages_are_not_taken_for_blocked() {
+        for page in [SEARCH, EMPTY_SEARCH, CHALLENGE] {
+            assert!(
+                reject_blocked(page).is_ok(),
+                "只有封锁页才报地区封锁, 实际误判了 {page}"
+            );
+        }
     }
 
     #[test]

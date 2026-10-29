@@ -58,6 +58,12 @@ pub enum SourceError {
     NotFound { id: &'static str, number: String },
     #[error("来源 {id} 请求失败: {message}")]
     Transport { id: &'static str, message: String },
+    /// 站点按出口 IP 拒绝访问.
+    ///
+    /// 与 [`SourceError::Parse`] 分开: 前者换出口就能解决, 后者要等站点改版修复,
+    /// 混在一起会让人去改一个没坏的解析器.
+    #[error("来源 {id} 拒绝当前网络出口的访问 (地区封锁)")]
+    Blocked { id: &'static str },
     /// 取得了响应, 但其中没有可识别的结构.
     ///
     /// 与 [`SourceError::NotFound`] 的区别: 未收录是已经读懂的答复, 这里是没有可识别的结构.
