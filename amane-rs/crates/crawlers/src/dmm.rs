@@ -184,10 +184,13 @@ fn parse_digital(response: &Value, number: &MediaNumber) -> Result<ScrapedMetada
         directors: names(&content["directors"]),
         actors: names(&content["actresses"]),
         genres: names(&content["genres"]),
-        poster_url: text(&content["packageImage"]["largeUrl"])
-            .or_else(|| text(&content["packageImage"]["mediumUrl"])),
-        // 数字版接口只给竖版包装图, 没有横版剧照; 封面由其它来源补.
-        cover_url: None,
+        poster_urls: text(&content["packageImage"]["largeUrl"])
+            .or_else(|| text(&content["packageImage"]["mediumUrl"]))
+            .into_iter()
+            .collect(),
+        // 数字版接口只给竖版包装图, 没有横版图; 横版由其它来源补.
+        thumb_urls: Vec::new(),
+        ..ScrapedMetadata::default()
     })
 }
 
@@ -280,7 +283,7 @@ mod tests {
         assert_eq!(scraped.series, None);
         assert_eq!(scraped.actors, vec!["葵つかさ", "乙白さやか"]);
         assert_eq!(
-            scraped.poster_url.as_deref(),
+            scraped.poster_urls.first().map(String::as_str),
             Some("https://example.invalid/p.jpg")
         );
     }

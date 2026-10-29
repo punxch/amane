@@ -79,12 +79,23 @@ pub struct Metadata {
     pub maker: Option<String>,
     pub label: Option<String>,
     pub series: Option<String>,
-    pub poster_url: Option<String>,
+    /// 竖版海报的远端地址; 首个用于详情页与资源物化.
+    pub poster_urls: Option<Json<Vec<String>>>,
+    /// 横版图的远端地址.
+    pub thumb_urls: Option<Json<Vec<String>>>,
+    /// 预告片的远端地址.
+    pub trailer_urls: Option<Json<Vec<String>>>,
+    /// 剧照, 按站点分组; 只存地址, 不物化.
+    pub extrafanart_urls: Option<Json<BTreeMap<String, Vec<String>>>>,
+    /// 各站评分.
+    pub scores: Option<Json<BTreeMap<String, f64>>>,
+    /// 各站的外部标识.
+    pub external_ids: Option<Json<BTreeMap<String, String>>>,
+    /// 各站的原站地址.
+    pub source_urls: Option<Json<BTreeMap<String, String>>>,
     /// 海报存到本地后的资源标识; 为 `None` 时详情页只能引用远端地址.
     pub poster_resource_id: Option<i64>,
-    /// 横版封面 (剧照) 的远端地址.
-    pub cover_url: Option<String>,
-    /// 封面存到本地后的资源标识.
+    /// 横版图存到本地后的资源标识.
     pub cover_resource_id: Option<i64>,
     /// 字段来源表; 键是字段名, 值是来源标识.
     pub field_sources: Option<Json<FieldSources>>,
@@ -95,6 +106,24 @@ pub struct Metadata {
     pub content_type: ContentType,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+impl Metadata {
+    /// 竖版海报的首项. 单值不落库, 详情页与资源物化都从这里取.
+    pub fn poster_url(&self) -> Option<&str> {
+        self.poster_urls
+            .as_ref()
+            .and_then(|urls| urls.0.first())
+            .map(String::as_str)
+    }
+
+    /// 横版图的首项.
+    pub fn thumb_url(&self) -> Option<&str> {
+        self.thumb_urls
+            .as_ref()
+            .and_then(|urls| urls.0.first())
+            .map(String::as_str)
+    }
 }
 
 /// 字段来源表: 键是字段名, 值是贡献该字段的来源标识.
@@ -169,7 +198,8 @@ impl From<&[String]> for Genres {
 ///
 /// 存的是来源自己的结果, 不是聚合后的条目: 字段溯源要能回答「当时这个来源说了什么」.
 /// 缺字段按默认值读取, 旧载荷因此不会因为新增字段而读不出来.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+// 评分是浮点, 因此不派生 `Eq`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(default)]
 pub struct ScrapedMetadata {
     pub title: Option<String>,
@@ -184,9 +214,18 @@ pub struct ScrapedMetadata {
     /// 旧载荷把这一项写作 `tags`, 读入时一并接受.
     #[serde(alias = "tags")]
     pub genres: Vec<String>,
-    pub poster_url: Option<String>,
-    /// 横版封面 (剧照); 与竖版海报分开, 详情页两个位置各用一张.
-    pub cover_url: Option<String>,
+    pub poster_urls: Vec<String>,
+    /// 横版图; 与竖版海报分开, 详情页两个位置各用一张.
+    pub thumb_urls: Vec<String>,
+    pub trailer_urls: Vec<String>,
+    /// 剧照, 按站点分组.
+    pub extrafanart_urls: BTreeMap<String, Vec<String>>,
+    /// 各站评分.
+    pub scores: BTreeMap<String, f64>,
+    /// 各站的外部标识.
+    pub external_ids: BTreeMap<String, String>,
+    /// 各站的原站地址.
+    pub source_urls: BTreeMap<String, String>,
 }
 
 /// 一条分站快照行.
@@ -217,9 +256,15 @@ pub struct MetadataInput<'a> {
     pub maker: Option<&'a str>,
     pub label: Option<&'a str>,
     pub series: Option<&'a str>,
-    pub poster_url: Option<&'a str>,
-    /// 横版封面 (剧照) 的远端地址.
-    pub cover_url: Option<&'a str>,
+    /// 竖版海报的远端地址; 空列表按「本次没有」处理.
+    pub poster_urls: Option<&'a [String]>,
+    /// 横版图的远端地址.
+    pub thumb_urls: Option<&'a [String]>,
+    pub trailer_urls: Option<&'a [String]>,
+    pub extrafanart_urls: Option<&'a BTreeMap<String, Vec<String>>>,
+    pub scores: Option<&'a BTreeMap<String, f64>>,
+    pub external_ids: Option<&'a BTreeMap<String, String>>,
+    pub source_urls: Option<&'a BTreeMap<String, String>>,
     /// `None` 表示本次不改动题材; `Some` 表示整体替换, 空列表即清空.
     pub genres: Option<&'a [String]>,
     /// `None` 表示本次不改动演员名单; `Some` 表示整体替换, 空列表即清空.
@@ -308,9 +353,12 @@ async fn upsert_row(
 
     let mut builder = QueryBuilder::<Sqlite>::new("INSERT INTO metadata (number");
     for spec in FIELDS {
-        builder.push(", ").push(spec.field.as_str());
+        builder.push(", ").push(spec.column);
     }
-    builder.push(", cover_url, genres, content_type, created_at, updated_at) VALUES (");
+    builder.push(
+        ", thumb_urls, trailer_urls, extrafanart_urls, scores, external_ids, source_urls, \
+         genres, content_type, created_at, updated_at) VALUES (",
+    );
     builder.push_bind(number.as_str());
     for spec in FIELDS {
         builder.push(", ");
@@ -318,7 +366,17 @@ async fn upsert_row(
     }
     builder
         .push(", ")
-        .push_bind(input.cover_url)
+        .push_bind(input.thumb_urls.map(|urls| Json(urls.to_vec())))
+        .push(", ")
+        .push_bind(input.trailer_urls.map(|urls| Json(urls.to_vec())))
+        .push(", ")
+        .push_bind(input.extrafanart_urls.map(|map| Json(map.clone())))
+        .push(", ")
+        .push_bind(input.scores.map(|map| Json(map.clone())))
+        .push(", ")
+        .push_bind(input.external_ids.map(|map| Json(map.clone())))
+        .push(", ")
+        .push_bind(input.source_urls.map(|map| Json(map.clone())))
         .push(", ")
         .push_bind(input.genres.map(|values| Json(Genres::from(values))))
         .push(", ")
@@ -330,7 +388,7 @@ async fn upsert_row(
         .push(") ON CONFLICT(number) DO UPDATE SET ");
 
     for spec in FIELDS {
-        let column = spec.field.as_str();
+        let column = spec.column;
         builder
             .push(column)
             .push(" = COALESCE(excluded.")
@@ -340,7 +398,12 @@ async fn upsert_row(
             .push("), ");
     }
     builder
-        .push("cover_url = COALESCE(excluded.cover_url, metadata.cover_url), ")
+        .push("thumb_urls = COALESCE(excluded.thumb_urls, metadata.thumb_urls), ")
+        .push("trailer_urls = COALESCE(excluded.trailer_urls, metadata.trailer_urls), ")
+        .push("extrafanart_urls = COALESCE(excluded.extrafanart_urls, metadata.extrafanart_urls), ")
+        .push("scores = COALESCE(excluded.scores, metadata.scores), ")
+        .push("external_ids = COALESCE(excluded.external_ids, metadata.external_ids), ")
+        .push("source_urls = COALESCE(excluded.source_urls, metadata.source_urls), ")
         .push("genres = COALESCE(excluded.genres, metadata.genres), ")
         .push("content_type = excluded.content_type, updated_at = excluded.updated_at RETURNING *");
 
@@ -394,6 +457,9 @@ fn push_value(builder: &mut QueryBuilder<'_, Sqlite>, value: Option<FieldValue>)
         }
         Some(FieldValue::Number(minutes)) => {
             builder.push_bind(minutes);
+        }
+        Some(FieldValue::List(values)) => {
+            builder.push_bind(Json(values));
         }
         // 来源没有给出这一项: 写 NULL, 由 `COALESCE` 保留既有值.
         None => {
@@ -723,21 +789,27 @@ impl MetadataRepository {
                 match value {
                     FieldValue::Text(text) => {
                         assignments
-                            .push(spec.field.as_str())
+                            .push(spec.column)
                             .push_unseparated(" = ")
                             .push_bind_unseparated(blank_to_none(&text).map(str::to_owned));
                     }
                     FieldValue::Date(date) => {
                         assignments
-                            .push(spec.field.as_str())
+                            .push(spec.column)
                             .push_unseparated(" = ")
                             .push_bind_unseparated(date);
                     }
                     FieldValue::Number(minutes) => {
                         assignments
-                            .push(spec.field.as_str())
+                            .push(spec.column)
                             .push_unseparated(" = ")
                             .push_bind_unseparated(minutes);
+                    }
+                    FieldValue::List(values) => {
+                        assignments
+                            .push(spec.column)
+                            .push_unseparated(" = ")
+                            .push_bind_unseparated(Json(values));
                     }
                 }
                 touched.push(spec.field);
@@ -1235,7 +1307,7 @@ mod tests {
             .upsert(&number, &MetadataInput::default())
             .await
             .expect("应写入成功");
-        // 旧版本的载荷把题材写作 `tags`, 也没有 `cover_url`; 读端必须仍能解出.
+        // 旧版本的载荷把题材写作 `tags`, 也没有横版图; 读端必须仍能解出.
         sqlx::query(
             "INSERT INTO source_snapshot (metadata_id, source_id, payload, fetched_at) \
              VALUES (?1, ?2, ?3, ?4)",
@@ -1252,7 +1324,7 @@ mod tests {
 
         assert_eq!(snapshots.len(), 1);
         assert_eq!(snapshots[0].payload.0.genres, vec!["ドラマ"]);
-        assert!(snapshots[0].payload.0.cover_url.is_none());
+        assert!(snapshots[0].payload.0.thumb_urls.is_empty());
     }
 
     #[tokio::test]
@@ -1767,6 +1839,48 @@ mod tests {
             .upsert(&number, &input(Some(title), &[]))
             .await
             .expect("应写入成功")
+    }
+
+    #[tokio::test]
+    async fn locked_poster_survives_rescrape() {
+        let (_dir, repository) = repository().await;
+        let number = MediaNumber::parse("ABC-001").expect("应解析成功");
+        let original = vec!["https://example.invalid/old.jpg".to_owned()];
+        let row = repository
+            .upsert(
+                &number,
+                &MetadataInput {
+                    poster_urls: Some(&original),
+                    ..MetadataInput::default()
+                },
+            )
+            .await
+            .expect("应写入成功");
+        repository
+            .set_lock(row.id, LockableField::PosterUrl, true)
+            .await
+            .expect("应加锁成功");
+
+        // 海报是列表列, 锁定的判定与文本列走同一张字段表.
+        let replacement = vec!["https://example.invalid/new.jpg".to_owned()];
+        let applied = repository
+            .apply_scraped(&ScrapeWrite {
+                number: &number,
+                input: MetadataInput {
+                    poster_urls: Some(&replacement),
+                    ..MetadataInput::default()
+                },
+                field_sources: BTreeMap::from([("poster_url".to_owned(), "dmm".to_owned())]),
+            })
+            .await
+            .expect("应写入成功");
+
+        assert_eq!(
+            applied.row.poster_url(),
+            Some("https://example.invalid/old.jpg"),
+            "锁定的海报不应被覆盖"
+        );
+        assert_eq!(applied.kept, vec![LockableField::PosterUrl]);
     }
 
     #[tokio::test]

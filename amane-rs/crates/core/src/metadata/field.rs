@@ -19,6 +19,8 @@ pub enum FieldValue {
     Date(Option<NaiveDate>),
     /// 数值列; `None` 写 NULL.
     Number(Option<i32>),
+    /// JSON 列表列; 整份替换.
+    List(Vec<String>),
 }
 
 impl FieldValue {
@@ -30,6 +32,8 @@ impl FieldValue {
 /// 一个可锁字段的描述.
 pub struct FieldSpec {
     pub field: LockableField,
+    /// 存储列名. 与字段标识分开: 海报的标识是 `poster_url`, 落库是列表列 `poster_urls`.
+    pub column: &'static str,
     /// 从条目读取展示值; 数值与日期在这里转成文本.
     pub read: fn(&Metadata) -> Option<String>,
     /// 从刮削输入读取本次提供的值; `None` 表示来源没有给出这一项.
@@ -44,6 +48,7 @@ pub struct FieldSpec {
 
 const fn spec(
     field: LockableField,
+    column: &'static str,
     read: fn(&Metadata) -> Option<String>,
     take: fn(&MetadataInput<'_>) -> Option<FieldValue>,
     clear: fn(&mut MetadataInput<'_>) -> bool,
@@ -52,6 +57,7 @@ const fn spec(
 ) -> FieldSpec {
     FieldSpec {
         field,
+        column,
         read,
         take,
         clear,
@@ -66,6 +72,7 @@ const fn spec(
 pub const FIELDS: [FieldSpec; 8] = [
     spec(
         LockableField::Title,
+        "title",
         read_title,
         take_title,
         clear_title,
@@ -74,6 +81,7 @@ pub const FIELDS: [FieldSpec; 8] = [
     ),
     spec(
         LockableField::Plot,
+        "plot",
         read_plot,
         take_plot,
         clear_plot,
@@ -82,6 +90,7 @@ pub const FIELDS: [FieldSpec; 8] = [
     ),
     spec(
         LockableField::ReleaseDate,
+        "release_date",
         read_release_date,
         take_release_date,
         clear_release_date,
@@ -90,6 +99,7 @@ pub const FIELDS: [FieldSpec; 8] = [
     ),
     spec(
         LockableField::RuntimeMinutes,
+        "runtime_minutes",
         read_runtime_minutes,
         take_runtime_minutes,
         clear_runtime_minutes,
@@ -98,6 +108,7 @@ pub const FIELDS: [FieldSpec; 8] = [
     ),
     spec(
         LockableField::Maker,
+        "maker",
         read_maker,
         take_maker,
         clear_maker,
@@ -106,6 +117,7 @@ pub const FIELDS: [FieldSpec; 8] = [
     ),
     spec(
         LockableField::Label,
+        "label",
         read_label,
         take_label,
         clear_label,
@@ -114,6 +126,7 @@ pub const FIELDS: [FieldSpec; 8] = [
     ),
     spec(
         LockableField::Series,
+        "series",
         read_series,
         take_series,
         clear_series,
@@ -122,6 +135,7 @@ pub const FIELDS: [FieldSpec; 8] = [
     ),
     spec(
         LockableField::PosterUrl,
+        "poster_urls",
         read_poster_url,
         take_poster_url,
         clear_poster_url,
@@ -159,7 +173,11 @@ fn read_series(metadata: &Metadata) -> Option<String> {
 }
 
 fn read_poster_url(metadata: &Metadata) -> Option<String> {
-    metadata.poster_url.clone()
+    metadata
+        .poster_urls
+        .as_ref()
+        .and_then(|urls| urls.0.first())
+        .cloned()
 }
 
 fn take_title(input: &MetadataInput<'_>) -> Option<FieldValue> {
@@ -193,7 +211,10 @@ fn take_series(input: &MetadataInput<'_>) -> Option<FieldValue> {
 }
 
 fn take_poster_url(input: &MetadataInput<'_>) -> Option<FieldValue> {
-    input.poster_url.map(FieldValue::text)
+    input
+        .poster_urls
+        .filter(|urls| !urls.is_empty())
+        .map(|urls| FieldValue::List(urls.to_vec()))
 }
 
 fn clear_title(input: &mut MetadataInput<'_>) -> bool {
@@ -225,7 +246,7 @@ fn clear_series(input: &mut MetadataInput<'_>) -> bool {
 }
 
 fn clear_poster_url(input: &mut MetadataInput<'_>) -> bool {
-    input.poster_url.take().is_some()
+    input.poster_urls.take().is_some()
 }
 
 fn patch_title(patch: &MetadataPatch<'_>) -> Result<Option<FieldValue>, RepositoryError> {
@@ -286,6 +307,15 @@ fn fill<T: Clone>(target: &mut Option<T>, source: &Option<T>) -> bool {
     }
 }
 
+/// 目标为空且来源有内容时整份填入.
+fn fill_list(target: &mut Vec<String>, source: &[String]) -> bool {
+    if !target.is_empty() || source.is_empty() {
+        return false;
+    }
+    target.extend_from_slice(source);
+    true
+}
+
 fn merge_title(target: &mut ScrapedMetadata, source: &ScrapedMetadata) -> bool {
     fill(&mut target.title, &source.title)
 }
@@ -314,8 +344,9 @@ fn merge_series(target: &mut ScrapedMetadata, source: &ScrapedMetadata) -> bool 
     fill(&mut target.series, &source.series)
 }
 
+/// 列表整份取首个非空来源, 不混拼.
 fn merge_poster_url(target: &mut ScrapedMetadata, source: &ScrapedMetadata) -> bool {
-    fill(&mut target.poster_url, &source.poster_url)
+    fill_list(&mut target.poster_urls, &source.poster_urls)
 }
 
 #[cfg(test)]
@@ -432,9 +463,14 @@ mod tests {
             maker: None,
             label: None,
             series: None,
-            poster_url: None,
+            poster_urls: None,
+            thumb_urls: None,
+            trailer_urls: None,
+            extrafanart_urls: None,
+            scores: None,
+            external_ids: None,
+            source_urls: None,
             poster_resource_id: None,
-            cover_url: None,
             cover_resource_id: None,
             field_sources: None,
             genres: None,

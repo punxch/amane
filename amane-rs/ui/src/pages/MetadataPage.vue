@@ -203,6 +203,11 @@ async function addTag(): Promise<void> {
 }
 
 /** 删除前把会连带删掉的数据列出来; 清单为空时直接确认. */
+/** 「站点 值」的列表, 用于按站存的评分与原站地址. */
+function perSite(entries: Record<string, string | number> | undefined): string[] {
+  return Object.entries(entries ?? {}).map(([site, value]) => `${site} ${value}`);
+}
+
 function describeRelated(): string {
   const related = detail.value?.related;
   if (related === undefined) {
@@ -589,6 +594,34 @@ onMounted(async () => {
 
           <p v-if="detail.actors.length > 0" class="mt-2 text-xs text-neutral-400">
             演员: {{ detail.actors.join("、") }}
+          </p>
+
+          <p v-if="perSite(detail.scores).length > 0" class="mt-2 text-xs text-neutral-400">
+            评分: {{ perSite(detail.scores).join("、") }}
+          </p>
+
+          <p v-if="detail.trailer_urls.length > 0" class="mt-2 text-xs text-neutral-400">
+            预告:
+            <a
+              v-for="url in detail.trailer_urls"
+              :key="url"
+              :href="url"
+              target="_blank"
+              rel="noreferrer"
+              class="mr-2 text-emerald-500 hover:text-emerald-400"
+            >链接</a>
+          </p>
+
+          <p v-if="perSite(detail.source_urls).length > 0" class="mt-2 text-xs text-neutral-400">
+            原站:
+            <a
+              v-for="[site, url] in Object.entries(detail.source_urls)"
+              :key="site"
+              :href="url"
+              target="_blank"
+              rel="noreferrer"
+              class="mr-2 text-emerald-500 hover:text-emerald-400"
+            >{{ site }}</a>
           </p>
 
           <div class="mt-3 border-t border-neutral-800/60 pt-2">

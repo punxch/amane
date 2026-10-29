@@ -56,7 +56,18 @@ impl Database {
     }
 
     async fn migrate(&self) -> Result<(), DbError> {
-        sqlx::migrate!("../../migrations").run(&self.write).await?;
+        // 重建表的迁移要先 DROP 旧表: 外键开着时 DROP 会连带删掉子表的行.
+        // 只能在事务之外关 —— sqlx 的 SQLite 迁移总是包在事务里, 而事务内的
+        // `PRAGMA foreign_keys` 是空操作. 写池固定单连接, 关掉的正是跑迁移的那条.
+        sqlx::query("PRAGMA foreign_keys = OFF")
+            .execute(&self.write)
+            .await?;
+        let outcome = sqlx::migrate!("../../migrations").run(&self.write).await;
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&self.write)
+            .await?;
+
+        outcome?;
         Ok(())
     }
 

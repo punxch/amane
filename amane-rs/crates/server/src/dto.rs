@@ -26,8 +26,18 @@ pub struct MetadataDto {
     pub poster_url: Option<String>,
     /// 海报在服务端的地址; 为 `None` 时表示尚未存到本地.
     pub poster_local_url: Option<String>,
-    /// 横版封面的远端地址.
+    /// 横版图的远端地址.
     pub cover_url: Option<String>,
+    /// 预告片地址.
+    pub trailer_urls: Vec<String>,
+    /// 剧照地址, 按站点分组.
+    pub extrafanart_urls: BTreeMap<String, Vec<String>>,
+    /// 各站评分.
+    pub scores: BTreeMap<String, f64>,
+    /// 各站外部标识.
+    pub external_ids: BTreeMap<String, String>,
+    /// 各站原站地址.
+    pub source_urls: BTreeMap<String, String>,
     /// 封面在服务端的地址; 为 `None` 时表示尚未存到本地.
     pub cover_local_url: Option<String>,
     /// 演员名单; 列表端点不返回, 只有详情端点填充.
@@ -56,6 +66,35 @@ pub struct MetadataDto {
 
 impl From<Metadata> for MetadataDto {
     fn from(value: Metadata) -> Self {
+        // 单值不落库: 对外仍是单值, 由列表首项投影得出.
+        let poster_url = value.poster_url().map(str::to_owned);
+        let cover_url = value.thumb_url().map(str::to_owned);
+        let trailer_urls = value
+            .trailer_urls
+            .as_ref()
+            .map(|urls| urls.0.clone())
+            .unwrap_or_default();
+        let extrafanart_urls = value
+            .extrafanart_urls
+            .as_ref()
+            .map(|map| map.0.clone())
+            .unwrap_or_default();
+        let scores = value
+            .scores
+            .as_ref()
+            .map(|map| map.0.clone())
+            .unwrap_or_default();
+        let external_ids = value
+            .external_ids
+            .as_ref()
+            .map(|map| map.0.clone())
+            .unwrap_or_default();
+        let source_urls = value
+            .source_urls
+            .as_ref()
+            .map(|map| map.0.clone())
+            .unwrap_or_default();
+
         Self {
             id: value.id,
             number: value.number,
@@ -66,11 +105,16 @@ impl From<Metadata> for MetadataDto {
             maker: value.maker,
             label: value.label,
             series: value.series,
-            poster_url: value.poster_url,
+            poster_url,
             poster_local_url: value
                 .poster_resource_id
                 .map(|id| format!("/api/resources/{id}")),
-            cover_url: value.cover_url,
+            cover_url,
+            trailer_urls,
+            extrafanart_urls,
+            scores,
+            external_ids,
+            source_urls,
             cover_local_url: value
                 .cover_resource_id
                 .map(|id| format!("/api/resources/{id}")),

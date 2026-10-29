@@ -111,12 +111,12 @@ impl TaskHandler for AssetsHandler {
 
         if locks.contains(&LockableField::PosterUrl) {
             context.logger.info("海报字段已锁定, 跳过下载").await;
-        } else if let Some(url) = row.poster_url.as_deref() {
+        } else if let Some(url) = row.poster_url() {
             self.store_image(&context, row.id, url, ImageKind::Poster)
                 .await?;
         }
 
-        if let Some(url) = row.cover_url.as_deref() {
+        if let Some(url) = row.thumb_url() {
             self.store_image(&context, row.id, url, ImageKind::Cover)
                 .await?;
         }
@@ -195,8 +195,8 @@ mod tests {
             .upsert(
                 &number,
                 &MetadataInput {
-                    poster_url: Some("https://example.invalid/poster.jpg"),
-                    cover_url: Some("https://example.invalid/cover.jpg"),
+                    poster_urls: Some(&["https://example.invalid/poster.jpg".to_owned()]),
+                    thumb_urls: Some(&["https://example.invalid/cover.jpg".to_owned()]),
                     ..MetadataInput::default()
                 },
             )
@@ -241,7 +241,7 @@ mod tests {
             .upsert(
                 &number,
                 &MetadataInput {
-                    poster_url: Some("https://example.invalid/poster.jpg"),
+                    poster_urls: Some(&["https://example.invalid/poster.jpg".to_owned()]),
                     ..MetadataInput::default()
                 },
             )

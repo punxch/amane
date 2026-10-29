@@ -142,8 +142,8 @@ fn parse_detail(html: &str, number: &MediaNumber) -> Result<ScrapedMetadata, Sou
 
     let (poster_url, cover_url) = cover_images(&document);
     let mut metadata = ScrapedMetadata {
-        poster_url,
-        cover_url,
+        poster_urls: poster_url.into_iter().collect(),
+        thumb_urls: cover_url.into_iter().collect(),
         title: document
             .select(&title_selector)
             .next()
@@ -460,12 +460,12 @@ mod tests {
         let scraped = parse_detail(DETAIL_WITH_IMAGES, &number).expect("应解析成功");
 
         assert_eq!(
-            scraped.cover_url.as_deref(),
+            scraped.thumb_urls.first().map(String::as_str),
             Some("https://example.invalid/covers/zy/ZY5eq.jpg"),
             "横版剧照归入封面"
         );
         assert_eq!(
-            scraped.poster_url.as_deref(),
+            scraped.poster_urls.first().map(String::as_str),
             Some("https://example.invalid/posters/zy/ZY5eq.jpg"),
             "竖版包装图归入海报"
         );
@@ -478,9 +478,9 @@ mod tests {
 
         let scraped = parse_detail(&html, &number).expect("应解析成功");
 
-        assert!(scraped.cover_url.is_none(), "没有横版图时封面为空");
+        assert!(scraped.thumb_urls.is_empty(), "没有横版图时列表为空");
         assert_eq!(
-            scraped.poster_url.as_deref(),
+            scraped.poster_urls.first().map(String::as_str),
             Some("https://example.invalid/covers/zy/ZY5eq.jpg"),
             "剩下的那张按海报处理"
         );

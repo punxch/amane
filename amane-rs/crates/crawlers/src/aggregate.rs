@@ -36,13 +36,44 @@ pub fn aggregate(items: &[(&str, ScrapedMetadata)]) -> Aggregated {
         }
 
         // 封面与三类列表不可锁, 不参与逐字段修订, 各自整份合并.
-        take_scalar(
+        take_list(
             &mut merged,
-            "cover_url",
+            "thumb_urls",
             source,
-            &scraped.cover_url,
-            |metadata| &mut metadata.cover_url,
+            &scraped.thumb_urls,
+            |metadata| &mut metadata.thumb_urls,
         );
+        take_list(
+            &mut merged,
+            "trailer_urls",
+            source,
+            &scraped.trailer_urls,
+            |metadata| &mut metadata.trailer_urls,
+        );
+
+        // 按站字段: 同站覆盖, 异站并存, 不参与「首个非空」.
+        for (site, urls) in &scraped.extrafanart_urls {
+            merged
+                .metadata
+                .extrafanart_urls
+                .entry(site.clone())
+                .or_insert_with(|| urls.clone());
+        }
+        for (site, score) in &scraped.scores {
+            merged.metadata.scores.insert(site.clone(), *score);
+        }
+        for (site, id) in &scraped.external_ids {
+            merged
+                .metadata
+                .external_ids
+                .insert(site.clone(), id.clone());
+        }
+        for (site, url) in &scraped.source_urls {
+            merged
+                .metadata
+                .source_urls
+                .insert(site.clone(), url.clone());
+        }
 
         take_list(
             &mut merged,
@@ -60,26 +91,6 @@ pub fn aggregate(items: &[(&str, ScrapedMetadata)]) -> Aggregated {
     }
 
     merged
-}
-
-fn take_scalar<T: Clone>(
-    merged: &mut Aggregated,
-    field: &str,
-    source: &str,
-    value: &Option<T>,
-    slot: impl Fn(&mut ScrapedMetadata) -> &mut Option<T>,
-) {
-    if slot(&mut merged.metadata).is_some() {
-        return;
-    }
-    let Some(value) = value else {
-        return;
-    };
-
-    *slot(&mut merged.metadata) = Some(value.clone());
-    merged
-        .field_sources
-        .insert(field.to_owned(), source.to_owned());
 }
 
 fn take_list(
