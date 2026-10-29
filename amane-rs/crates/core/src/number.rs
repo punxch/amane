@@ -38,12 +38,23 @@ static CONCAT_WHOLE: LazyLock<Regex> =
 
 static FC2_TOKEN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)fc2[-_ ]?(?:ppv[-_ ]?)?(\d{5,8})").expect("固定正则"));
-static AMATEUR_TOKEN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b(\d{6})[-_](\d{2,4})\b").expect("固定正则"));
+static AMATEUR_TOKEN: LazyLock<Regex> = LazyLock::new(|| token(r"(\d{6})[-_](\d{2,4})"));
 static DASHED_TOKEN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)\b([a-z]{1,6}\d{0,4})-(\d{2,5})[a-z]?\b").expect("固定正则"));
-static CONCAT_TOKEN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)\b([a-z]{2,6})(\d{2,5})\b").expect("固定正则"));
+    LazyLock::new(|| token(r"([a-z]{1,6}\d{0,4})-(\d{2,5})[a-z]?"));
+static CONCAT_TOKEN: LazyLock<Regex> = LazyLock::new(|| token(r"([a-z]{2,6})(\d{2,5})"));
+
+/// 词边界: 前一字符不是 ASCII 字母数字, 或已在串首.
+const TOKEN_START: &str = r"(?:^|[^0-9A-Za-z])";
+/// 词边界: 后一字符不是 ASCII 字母数字, 或已到串尾.
+const TOKEN_END: &str = r"(?:[^0-9A-Za-z]|$)";
+
+/// 自由文本里的番号形态, 两侧补上词边界.
+///
+/// 不用 `\b`: 它把 `_` 与中日文都当作词内字符, 而这两者在文件名里恰恰是分隔符 ——
+/// `SSIS-001_1080p` 与 `SSIS-001无码` 都因此提取不出来.
+fn token(body: &str) -> Regex {
+    Regex::new(&format!("(?i){TOKEN_START}{body}{TOKEN_END}")).expect("固定正则")
+}
 
 static AMATEUR_CLASS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\d{6}[-_]\d{2,4}$").expect("固定正则"));
@@ -258,6 +269,15 @@ mod tests {
             ("完全沒有番号", None),
             ("", None),
             ("2024-01-15", None),
+            // 下划线与中文紧接番号, 都是文件名里常见的分隔方式.
+            ("SSIS-001_1080p.mp4", Some("SSIS-001")),
+            ("SSIS-001无码流出.mp4", Some("SSIS-001")),
+            ("abc_SSIS-001.mp4", Some("SSIS-001")),
+            ("CHN025_1280x720_H.265.mp4", Some("CHN-025")),
+            ("CHN025_restored.mp4", Some("CHN-025")),
+            // 下划线本身不是番号分隔符: 相机与图片文件名不该被当成番号.
+            ("IMG_1234.jpg", None),
+            ("DSC_0012.jpg", None),
         ];
 
         for (input, expected) in cases {
