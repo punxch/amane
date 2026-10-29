@@ -54,6 +54,7 @@
 |--------|---------|---------|
 | 条目 | `FeedItem`、列表项、目录项 | `Metadata` (写番号条目或影片) |
 | 分类 | `facet` 实体与分类页 | `ContentType` (内容类型)、`classify` (归类) |
+| 题材 | `genres` (站点给出的题材标签) | `facet` (写分类)、`ContentType` (写类型) |
 | 类型 | `ContentType`、`SavedQuery.entity`、表单枚举 | 泛指的类别 (必须带限定词)、`FacetKind` (分类) |
 | 来源 | 刮削来源 (`source`)、清单来源 (`InventorySource`) | `Feed` (订阅源)、日志 `source` 字段 |
 | 站点 | 内置来源 (`SiteName`) | 插件来源 (写「来源」) |
