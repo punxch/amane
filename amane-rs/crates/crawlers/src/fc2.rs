@@ -9,7 +9,7 @@ use amane_net::{NetError, RequestOptions, WebClient};
 use async_trait::async_trait;
 use scraper::{Html, Selector};
 
-use crate::dom::{absolute, attrs, find_date, texts};
+use crate::dom::{absolute, attrs, find_date, first_text, texts};
 use crate::{Capability, RawBody, ScrapedMetadata, Source, SourceDescriptor, SourceError};
 
 /// 请求实际打到的主机名; 限速按它分桶.
@@ -21,6 +21,10 @@ const ID: &str = "fc2";
 
 /// 商品页独有的块. 商品不在售时站点回一个没有该块的「找不到商品」页 (HTTP 200).
 const ARTICLE_BLOCK: &str = r#"div[data-section="userInfo"]"#;
+
+/// 不在售页面的标题标志. 站点按语言给两种标题, 英文与日文都要认 ——
+/// 浏览器指纹默认带的是英文语言头, 只认日文会把下架判成改版.
+const MISSING_MARKERS: &[&str] = &["見つかりません", "find any products"];
 
 pub struct Fc2Source {
     client: Arc<WebClient>,
@@ -50,7 +54,7 @@ impl Source for Fc2Source {
         let url = format!("{BASE_URL}/article/{article_id}/");
         let html = self
             .client
-            .get_text_with(&url, &RequestOptions::new())
+            .get_text_with(&url, &options())
             .await
             .map_err(transport_error)?;
 
@@ -66,6 +70,14 @@ static DESCRIPTOR: SourceDescriptor = SourceDescriptor {
     rate: amane_net::Rate::each_second(1, 1),
     capabilities: &[Capability::Metadata],
 };
+
+/// 站点要求的请求头.
+///
+/// 语言头决定标签文字与简介的取法: 默认的英文页把日期写成 `Sale Day`, 简介只剩一个番号,
+/// 拿不到可用的正文. 这是日文站, 就按日文取.
+fn options() -> RequestOptions {
+    RequestOptions::new().header("accept-language", "ja-JP,ja;q=0.9")
+}
 
 fn transport_error(error: NetError) -> SourceError {
     SourceError::Transport {
@@ -101,7 +113,7 @@ fn parse_detail(html: &str, article_id: &str) -> Result<ScrapedMetadata, SourceE
     // 不在售时页面是「找不到商品」, 与未收录同义; 缺别的块才算解析失败.
     let block = Selector::parse(ARTICLE_BLOCK).expect("固定选择器");
     if document.select(&block).next().is_none() {
-        if html.contains("見つかりません") {
+        if is_missing_page(&document) {
             return Err(SourceError::NotFound {
                 id: ID,
                 number: format!("FC2-PPV-{article_id}"),
@@ -132,13 +144,17 @@ fn parse_detail(html: &str, article_id: &str) -> Result<ScrapedMetadata, SourceE
         plot: attrs(&document, r#"meta[name="description"]"#, "content")
             .into_iter()
             .next(),
+        // 日期写在「販売日 : 2026/10/14」这类段落里, 标签随语言变, 因此不认标签:
+        // 这几段里第一个能解析成日期的就是发售日.
         release_date: texts(&document, "div.items_article_softDevice p")
             .iter()
-            .find(|line| line.contains("販売日"))
-            .and_then(|line| find_date(line)),
-        maker: texts(&document, "div.items_article_headerInfo ul li a")
-            .last()
-            .cloned(),
+            .find_map(|line| find_date(line)),
+        runtime_minutes: first_text(&document, "p.items_article_info")
+            .as_deref()
+            .and_then(runtime_of),
+        maker: texts(&document, "section.items_comment_sellerBox h4 a")
+            .into_iter()
+            .next(),
         genres: texts(&document, "a.tag.tagTag"),
         poster_urls: poster.into_iter().collect(),
         // 样品图首张即横版封面, 其余进剧照.
@@ -150,6 +166,29 @@ fn parse_detail(html: &str, article_id: &str) -> Result<ScrapedMetadata, SourceE
     }
 
     Ok(scraped)
+}
+
+/// 时长: 站点写成 `58:01` (分:秒), 长片会写成 `1:02:03` (时:分:秒).
+fn runtime_of(value: &str) -> Option<i32> {
+    let parts: Vec<&str> = value.trim().split(':').collect();
+    let minutes = match parts.as_slice() {
+        [minutes, _seconds] => minutes.parse::<i32>().ok()?,
+        [hours, minutes, _seconds] => {
+            hours.parse::<i32>().ok()? * 60 + minutes.parse::<i32>().ok()?
+        }
+        _ => return None,
+    };
+
+    (minutes > 0).then_some(minutes)
+}
+
+/// 不在售页面的标志写在标题里.
+fn is_missing_page(document: &Html) -> bool {
+    let Some(title) = first_text(document, "title") else {
+        return false;
+    };
+
+    MISSING_MARKERS.iter().any(|marker| title.contains(marker))
 }
 
 #[cfg(test)]
@@ -164,13 +203,15 @@ mod tests {
             <span><img src="//contents-thumbnail.fc2.com/poster.jpg" /></span>
             <img alt="商品标题" src="//contents-thumbnail.fc2.com/main.jpg" />
           </div>
-          <div class="items_article_headerInfo">
-            <ul><li><a href="/seller/1">卖家甲</a></li><li><a href="/seller/2">卖家乙</a></li></ul>
-          </div>
-          <div data-section="userInfo">卖家信息</div>
+          <div class="items_article_headerInfo" data-section="userInfo">标题与收藏</div>
+          <section class="items_comment_sellerBox" data-section="userInfo">
+            <h3>販売者情報</h3>
+            <h4><a href="/users/seller/">卖家名</a></h4>
+          </section>
+          <p class="items_article_info">58:01</p>
           <div class="items_article_softDevice">
-            <p>販売日：2021/03/04</p>
-            <p>再生時間：45分</p>
+            <p>販売日 : 2021/03/04</p>
+            <p>商品ID : FC2 PPV 1234567</p>
           </div>
           <ul class="items_article_SampleImagesArea">
             <li><a href="//contents-thumbnail.fc2.com/s1.jpg"></a></li>
@@ -184,8 +225,14 @@ mod tests {
 
     /// 已下架: 站点回 200, 但页面是「找不到商品」.
     const WITHDRAWN: &str = r#"
-        <html><body><div class="items_article_MainitemThumb"></div>
-        <p>お探しの商品が見つかりませんでした</p></body></html>
+        <html><head><title>お探しの商品が見つかりませんでした | FC2</title></head>
+        <body><div class="items_article_MainitemThumb"></div></body></html>
+    "#;
+
+    /// 同一页面按语言给的英文标题: 浏览器指纹默认带英文语言头, 拿到的就是这一份.
+    const WITHDRAWN_EN: &str = r#"
+        <html><head><title>We couldn&#039;t find any products that match your search | FC2</title></head>
+        <body></body></html>
     "#;
 
     /// 改版后的页面: 用户信息块还在, 标题没了.
@@ -217,7 +264,8 @@ mod tests {
             scraped.release_date.map(|date| date.to_string()),
             Some("2021-03-04".to_owned())
         );
-        assert_eq!(scraped.maker.as_deref(), Some("卖家乙"), "卖家取最后一项");
+        assert_eq!(scraped.runtime_minutes, Some(58), "时长取自「分:秒」");
+        assert_eq!(scraped.maker.as_deref(), Some("卖家名"));
         assert_eq!(scraped.genres, vec!["素人".to_owned(), "企画".to_owned()]);
         assert_eq!(scraped.plot.as_deref(), Some("官方简介"));
     }
@@ -239,6 +287,14 @@ mod tests {
     }
 
     #[test]
+    fn runtime_handles_hours_and_garbage() {
+        assert_eq!(super::runtime_of("58:01"), Some(58));
+        assert_eq!(super::runtime_of("1:02:03"), Some(62));
+        assert_eq!(super::runtime_of("00:30"), None, "零时长不算有效值");
+        assert_eq!(super::runtime_of("—"), None);
+    }
+
+    #[test]
     fn withdrawn_article_is_not_found() {
         let error = parse_detail(WITHDRAWN, "1234567").expect_err("下架应判未收录");
 
@@ -248,6 +304,13 @@ mod tests {
             }
             other => panic!("应判未收录, 实际 {other:?}"),
         }
+    }
+
+    #[test]
+    fn withdrawn_article_in_english_is_not_found_too() {
+        let error = parse_detail(WITHDRAWN_EN, "1234567").expect_err("英文下架页也应判未收录");
+
+        assert!(matches!(error, super::SourceError::NotFound { .. }));
     }
 
     #[test]
