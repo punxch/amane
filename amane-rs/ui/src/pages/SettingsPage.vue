@@ -34,6 +34,8 @@ const applied = ref<string[]>([]);
 const restartRequired = ref<string[]>([]);
 
 const schema = ref<Record<string, SectionSchema>>({});
+/** 内容类型与其展示名; 由筛选选项接口给出, 界面不自行维护枚举. */
+const contentTypes = ref<Array<{ value: string; label: string }>>([]);
 /** 最近一次读到的配置; 提交时作为基底, 表单没渲染的字段原样带回. */
 const loaded = ref<SettingsDto | null>(null);
 const form = reactive<{ cold: Record<string, string>; hot: Record<string, unknown> }>({
@@ -108,9 +110,15 @@ function numberAt(field: string): number {
   return typeof value === "number" ? value : Number(value ?? 0);
 }
 
-function listAt(field: string): string[] {
-  const value = form.hot[field];
-  return Array.isArray(value) ? value.map(String) : [];
+/** 某一类型的来源链在表单里是逗号分隔的文本. */
+function chainText(contentType: string): string {
+  const routes = form.hot.content_routes as Record<string, string[]> | undefined;
+  return (routes?.[contentType] ?? []).join(", ");
+}
+
+function writeChain(contentType: string, raw: string): void {
+  const routes = (form.hot.content_routes ?? {}) as Record<string, string[]>;
+  form.hot.content_routes = { ...routes, [contentType]: parseList(raw) };
 }
 
 function buildPayload(): UpdateConfigRequest {
@@ -124,7 +132,8 @@ function buildPayload(): UpdateConfigRequest {
     ...base.hot,
     concurrency: numberAt("concurrency"),
     request_timeout_secs: numberAt("request_timeout_secs"),
-    enabled_sources: listAt("enabled_sources"),
+    content_routes: (form.hot.content_routes ??
+      base.hot.content_routes) as Record<string, string[]>,
   };
   const token = (form.cold.api_token ?? "").trim();
 
@@ -142,10 +151,12 @@ async function load(): Promise<void> {
   loading.value = true;
   failure.value = null;
   try {
-    const [state, document] = await Promise.all([
+    const [state, document, options] = await Promise.all([
       api.readConfig(),
       api.configSchema(),
+      api.filters(),
     ]);
+    contentTypes.value = options.content_types;
     // 断言必要性: schema 来自服务端, 这里只按 JSON 文档结构读取, 不做运行时校验.
     schema.value = (document as { $defs?: Record<string, SectionSchema> }).$defs ?? {};
     loaded.value = state;
@@ -285,8 +296,28 @@ onMounted(load);
             {{ hotText(field) }}
           </p>
           <p v-if="widgetOf(spec) === 'list'" class="mt-1 text-xs text-neutral-600">
-            逗号分隔，顺序即聚合优先级；未列出的来源不参与，留空表示全部启用。
+            逗号分隔。
           </p>
+        </div>
+
+        <div class="mt-6 border-t border-neutral-800/80 pt-5">
+          <h3 class="text-sm font-medium text-neutral-200">类型路由</h3>
+          <p class="mt-1 text-xs text-neutral-500">
+            每类影片按链上顺序询问来源，第一个给出值的来源决定该字段。链不能为空。
+          </p>
+
+          <div v-for="option in contentTypes" :key="option.value" class="mt-3">
+            <label class="block text-xs text-neutral-500">
+              {{ option.label }}
+              <span class="ml-1 font-mono text-neutral-700">{{ option.value }}</span>
+            </label>
+            <input
+              :value="chainText(option.value)"
+              class="mt-1 w-full rounded-md border border-neutral-800 bg-neutral-900 px-3 py-1.5 font-mono text-sm text-neutral-100 outline-none focus:border-emerald-600"
+              placeholder="dmm, javdb"
+              @input="writeChain(option.value, inputValue($event))"
+            />
+          </div>
         </div>
       </section>
 

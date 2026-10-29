@@ -87,8 +87,8 @@ impl Runtime {
             Arc::clone(&client),
         ));
         let registry = Registry::builtin(Arc::clone(&client));
-        // 热配置里的来源顺序即聚合优先级; 为空表示保持内置顺序.
-        registry.apply_enabled_order(&settings.hot.enabled_sources);
+        // 热配置里的类型路由决定每类影片问哪些来源, 链上顺序即聚合优先级.
+        registry.apply_routes(&settings.hot.content_routes);
         let sources = Arc::new(registry);
         let libraries = LibraryRepository::new(database.clone());
         let organize = OrganizeRepository::new(database.clone());
@@ -185,10 +185,9 @@ impl Runtime {
                 .map_err(|error| ConfigError::Submit(error.to_string()))?;
             applied.push("request_timeout_secs".to_owned());
         }
-        if incoming.hot.enabled_sources != self.settings().hot.enabled_sources {
-            self.sources
-                .apply_enabled_order(&incoming.hot.enabled_sources);
-            applied.push("enabled_sources".to_owned());
+        if incoming.hot.content_routes != self.settings().hot.content_routes {
+            self.sources.apply_routes(&incoming.hot.content_routes);
+            applied.push("content_routes".to_owned());
         }
         if incoming.hot.concurrency != self.settings().hot.concurrency {
             self.tasks

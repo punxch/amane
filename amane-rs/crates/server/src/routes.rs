@@ -728,14 +728,9 @@ fn metadata_filter(state: &AppState, query: &ListQuery) -> Result<MetadataFilter
         genre,
     };
     // 取值域有界的来源由内核判定; 错误码留在传输层, 界面据此分支.
-    // 白名单取当前启用的来源, 与 `GET /api/filters` 给出的下拉一致.
-    let known: Vec<&str> = state
-        .runtime
-        .sources
-        .active()
-        .iter()
-        .map(|source| source.descriptor().id)
-        .collect();
+    // 白名单取全部登记来源, 与 `GET /api/filters` 给出的下拉一致: 停用的来源
+    // 仍可能有旧快照, 按它筛选要能筛出来.
+    let known = state.runtime.sources.known_ids();
     filter.validate(&known).map_err(|error| ApiError::Invalid {
         code: "unknown_source",
         message: error.to_string(),
@@ -767,7 +762,7 @@ pub async fn filter_options(
     let sources = state
         .runtime
         .sources
-        .active()
+        .all()
         .iter()
         .map(|source| SourceOption {
             id: source.descriptor().id.to_owned(),

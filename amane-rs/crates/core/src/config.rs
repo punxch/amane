@@ -1,7 +1,10 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+use crate::content_type::ContentType;
 
 /// 冷配置: 修改后需要重启进程才能生效.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -35,9 +38,9 @@ pub struct HotSettings {
     /// 单次上游请求的超时时间.
     #[schemars(range(min = 1, max = 600), extend("x-widget" = "number"))]
     pub request_timeout_secs: u32,
-    /// 启用的来源标识; 为空表示全部启用.
-    #[schemars(extend("x-widget" = "list"))]
-    pub enabled_sources: Vec<String>,
+    /// 每类影片的来源链; 链上顺序即字段优先级.
+    #[schemars(extend("x-widget" = "content-routes"))]
+    pub content_routes: ContentRoutes,
     /// 扫描规则: 媒体扩展名、大小阈值与文件黑名单.
     pub scan: ScanSettings,
     /// 整理规则: 目标路径模板.
@@ -49,10 +52,113 @@ impl Default for HotSettings {
         Self {
             concurrency: 4,
             request_timeout_secs: 20,
-            enabled_sources: Vec::new(),
+            content_routes: ContentRoutes::default(),
             scan: ScanSettings::default(),
             organize: OrganizeSettings::default(),
         }
+    }
+}
+
+/// 类型路由: 内容类型 → 有序来源标识链.
+///
+/// 七类键冻结: 缺键补默认, 未知键丢弃. 保存时校验每条链非空且成员都是已知来源.
+/// 未知键丢弃是给「配置文件来自更新的版本」留的余地: 旧版本读不懂的键直接忽略,
+/// 而不是让整份配置读不出来.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(transparent)]
+pub struct ContentRoutes(BTreeMap<ContentType, Vec<String>>);
+
+impl ContentRoutes {
+    /// 某一类型的来源链; 未登记的类型返回空链.
+    pub fn chain(&self, content_type: ContentType) -> &[String] {
+        self.0
+            .get(&content_type)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    /// 逐类型给出, 顺序即 [`ContentType::ALL`].
+    pub fn entries(&self) -> impl Iterator<Item = (ContentType, &[String])> {
+        ContentType::ALL
+            .into_iter()
+            .map(|content_type| (content_type, self.chain(content_type)))
+    }
+
+    /// 替换某一类型的来源链, 其余类型保持原样.
+    pub fn with_chain(self, content_type: ContentType, chain: Vec<String>) -> Self {
+        let mut routes = self.0;
+        routes.insert(content_type, chain);
+        Self(routes)
+    }
+
+    /// 由「类型 → 标识链」逐项构造; 未给出的类型取默认链.
+    pub fn from_chains(chains: impl IntoIterator<Item = (ContentType, Vec<String>)>) -> Self {
+        let mut routes = Self::default();
+        for (content_type, chain) in chains {
+            routes.0.insert(content_type, chain);
+        }
+        routes
+    }
+
+    /// 校验每条链非空且成员都是已知来源.
+    pub fn validate(&self, known_sources: &[&str]) -> Result<(), ConfigError> {
+        for (content_type, chain) in self.entries() {
+            if chain.is_empty() {
+                return Err(ConfigError::BadValue {
+                    field: "content_routes",
+                    reason: format!("{} 的来源链为空, 该类型将无人可用", content_type.label()),
+                });
+            }
+            for source in chain {
+                if !known_sources.contains(&source.as_str()) {
+                    return Err(ConfigError::UnknownSource(source.clone()));
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl<'de> Deserialize<'de> for ContentRoutes {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = BTreeMap::<String, Vec<String>>::deserialize(deserializer)?;
+
+        // 先铺默认再覆盖: 缺的键得到默认链, 未知的键被丢弃.
+        let mut routes = Self::default().0;
+        for (key, chain) in raw {
+            if let Some(content_type) = ContentType::parse(&key) {
+                routes.insert(content_type, chain);
+            }
+        }
+
+        Ok(Self(routes))
+    }
+}
+
+/// 默认来源链.
+///
+/// 只列已实现的来源: 校验要求每个标识都是已知来源, 列上还没落地的站点会让默认配置
+/// 自己就存不回去. 每落地一个来源, 在它该出现的类型里追加.
+fn default_content_routes() -> BTreeMap<ContentType, Vec<String>> {
+    let chain = |ids: &[&str]| ids.iter().map(|id| (*id).to_owned()).collect::<Vec<_>>();
+
+    [
+        (ContentType::Censored, chain(&["dmm", "javdb"])),
+        (ContentType::Uncensored, chain(&["javdb"])),
+        (ContentType::Fc2, chain(&["javdb"])),
+        (ContentType::Chinese, chain(&["javdb"])),
+        (ContentType::Amateur, chain(&["dmm", "javdb"])),
+        (ContentType::Western, chain(&["javdb"])),
+        (ContentType::Hentai, chain(&["dmm", "javdb"])),
+    ]
+    .into_iter()
+    .collect()
+}
+
+impl Default for ContentRoutes {
+    fn default() -> Self {
+        Self(default_content_routes())
     }
 }
 
@@ -180,11 +286,7 @@ impl HotSettings {
             600,
         )?;
 
-        for source in &self.enabled_sources {
-            if !known_sources.contains(&source.as_str()) {
-                return Err(ConfigError::UnknownSource(source.clone()));
-            }
-        }
+        self.content_routes.validate(known_sources)?;
 
         self.scan.validate()?;
         self.organize.validate()
@@ -233,7 +335,27 @@ pub enum ConfigError {
 
 #[cfg(test)]
 mod tests {
-    use super::{ConfigError, HotSettings, OrganizeSettings, ScanSettings, Settings};
+    use super::{
+        ConfigError, ContentRoutes, HotSettings, OrganizeSettings, ScanSettings, Settings,
+    };
+    use crate::content_type::ContentType;
+
+    fn routes_with(content_type: ContentType, chain: &[&str]) -> ContentRoutes {
+        let mut routes = ContentRoutes::default();
+        routes.0.insert(
+            content_type,
+            chain.iter().map(|id| (*id).to_owned()).collect(),
+        );
+        routes
+    }
+
+    fn chain_of(routes: &ContentRoutes, content_type: ContentType) -> Vec<&str> {
+        routes
+            .chain(content_type)
+            .iter()
+            .map(String::as_str)
+            .collect()
+    }
 
     #[test]
     fn organize_settings_reject_malformed_template() {
@@ -305,7 +427,6 @@ mod tests {
         let settings = HotSettings {
             concurrency: 1,
             request_timeout_secs: 600,
-            enabled_sources: vec!["dmm".to_owned()],
             ..HotSettings::default()
         };
 
@@ -328,7 +449,7 @@ mod tests {
                 ..HotSettings::default()
             };
             let error = settings
-                .validate(&["dmm"])
+                .validate(&["dmm", "javdb"])
                 .expect_err(&format!("{field}={concurrency}/{timeout} 应被拒绝"));
 
             match error {
@@ -341,14 +462,60 @@ mod tests {
     #[test]
     fn hot_settings_reject_unknown_source() {
         let settings = HotSettings {
-            enabled_sources: vec!["nowhere".to_owned()],
+            content_routes: routes_with(ContentType::Censored, &["nowhere"]),
             ..HotSettings::default()
         };
 
-        match settings.validate(&["dmm"]) {
+        match settings.validate(&["dmm", "javdb"]) {
             Err(ConfigError::UnknownSource(name)) => assert_eq!(name, "nowhere"),
             other => panic!("应为未知来源错误, 实际 {other:?}"),
         }
+    }
+
+    #[test]
+    fn content_routes_reject_empty_chain() {
+        let routes = routes_with(ContentType::Censored, &[]);
+
+        match routes.validate(&["dmm", "javdb"]) {
+            Err(ConfigError::BadValue { reason, .. }) => {
+                assert!(reason.contains("有码"), "应指出是哪一类, 实际 {reason}");
+            }
+            other => panic!("空链必须拒绝, 实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn content_routes_fill_missing_types_from_default() {
+        let parsed: ContentRoutes =
+            serde_json::from_str(r#"{"censored": ["javdb"]}"#).expect("应解析成功");
+
+        assert_eq!(chain_of(&parsed, ContentType::Censored), ["javdb"]);
+        assert_eq!(
+            chain_of(&parsed, ContentType::Western),
+            chain_of(&ContentRoutes::default(), ContentType::Western),
+            "缺的键补默认"
+        );
+    }
+
+    #[test]
+    fn content_routes_drop_unknown_type_keys() {
+        let parsed: ContentRoutes =
+            serde_json::from_str(r#"{"podcast": ["dmm"]}"#).expect("未知键不应让整份配置读不出来");
+
+        assert_eq!(
+            parsed,
+            ContentRoutes::default(),
+            "未知类型丢弃, 其余保持默认"
+        );
+    }
+
+    #[test]
+    fn default_content_routes_reference_implemented_sources() {
+        // 默认链里出现未实现的来源, 会让默认配置自己就存不回去.
+        assert!(
+            ContentRoutes::default().validate(&["dmm", "javdb"]).is_ok(),
+            "默认链只列已实现的来源"
+        );
     }
 
     #[test]

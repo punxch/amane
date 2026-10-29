@@ -7,7 +7,18 @@ use serde::{Deserialize, Serialize};
 ///
 /// 与马赛克标记正交: 类型描述条目属于哪一类作品, 标记描述这一份文件自身的证据.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, sqlx::Type,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    sqlx::Type,
 )]
 #[serde(rename_all = "lowercase")]
 #[sqlx(rename_all = "lowercase")]

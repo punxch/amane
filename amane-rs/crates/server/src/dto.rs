@@ -447,7 +447,8 @@ pub struct ColdSettingsDto {
 pub struct HotSettingsDto {
     pub concurrency: u32,
     pub request_timeout_secs: u32,
-    pub enabled_sources: Vec<String>,
+    /// 每类影片的来源链; 键是类型标识, 值是有序来源标识.
+    pub content_routes: BTreeMap<String, Vec<String>>,
     pub scan: ScanSettingsDto,
     pub organize: OrganizeSettingsDto,
 }
@@ -481,7 +482,12 @@ impl SettingsDto {
             hot: HotSettingsDto {
                 concurrency: value.hot.concurrency,
                 request_timeout_secs: value.hot.request_timeout_secs,
-                enabled_sources: value.hot.enabled_sources.clone(),
+                content_routes: value
+                    .hot
+                    .content_routes
+                    .entries()
+                    .map(|(content_type, chain)| (content_type.as_str().to_owned(), chain.to_vec()))
+                    .collect(),
                 scan: ScanSettingsDto {
                     media_extensions: value.hot.scan.media_extensions.clone(),
                     min_file_size: value.hot.scan.min_file_size,
@@ -509,7 +515,12 @@ impl UpdateConfigRequest {
             hot: amane_core::config::HotSettings {
                 concurrency: self.hot.concurrency,
                 request_timeout_secs: self.hot.request_timeout_secs,
-                enabled_sources: self.hot.enabled_sources,
+                content_routes: amane_core::config::ContentRoutes::from_chains(
+                    self.hot.content_routes.iter().filter_map(|(key, chain)| {
+                        amane_core::ContentType::parse(key)
+                            .map(|content_type| (content_type, chain.clone()))
+                    }),
+                ),
                 scan: amane_core::config::ScanSettings {
                     media_extensions: self.hot.scan.media_extensions,
                     min_file_size: self.hot.scan.min_file_size,

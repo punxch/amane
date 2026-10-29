@@ -807,12 +807,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn disabling_a_source_removes_it_from_the_active_set() {
+    async fn removing_a_source_from_the_chain_is_reported_as_applied() {
         let (_dir, app) = app(None).await;
 
         let (_, current) = call(app.clone(), Method::GET, "/api/config", None).await;
         let mut body = current.clone();
-        body["hot"]["enabled_sources"] = serde_json::json!(["dmm"]);
+        body["hot"]["content_routes"]["censored"] = serde_json::json!(["javdb"]);
         let text = serde_json::to_string(&body).expect("配置应可序列化");
         let (status, updated) = call(app.clone(), Method::PUT, "/api/config", Some(&text)).await;
         assert_eq!(status, StatusCode::OK);
@@ -820,10 +820,11 @@ mod tests {
             updated["applied"]
                 .as_array()
                 .expect("applied 应为数组")
-                .contains(&serde_json::json!("enabled_sources")),
-            "来源变化应报告为已生效"
+                .contains(&serde_json::json!("content_routes")),
+            "类型路由变化应报告为已生效"
         );
 
+        // 停用的来源仍要出现在选项里: 旧条目还带着它的快照, 按它筛选要能筛出来.
         let (_, options) = call(app.clone(), Method::GET, "/api/filters", None).await;
         let ids: Vec<&str> = options["sources"]
             .as_array()
@@ -831,35 +832,26 @@ mod tests {
             .iter()
             .filter_map(|item| item["id"].as_str())
             .collect();
-        assert_eq!(ids, ["dmm"], "未列出的来源不应出现在可选项里");
+        assert_eq!(ids, ["dmm", "javdb"], "停用不等于从登记表里消失");
     }
 
     #[tokio::test]
-    async fn re_enabling_a_disabled_source_is_allowed() {
+    async fn re_adding_a_source_to_the_chain_is_allowed() {
         let (_dir, app) = app(None).await;
         let (_, current) = call(app.clone(), Method::GET, "/api/config", None).await;
 
         let mut disabled = current.clone();
-        disabled["hot"]["enabled_sources"] = serde_json::json!(["dmm"]);
+        disabled["hot"]["content_routes"]["censored"] = serde_json::json!(["javdb"]);
         let text = serde_json::to_string(&disabled).expect("配置应可序列化");
         let (status, _) = call(app.clone(), Method::PUT, "/api/config", Some(&text)).await;
         assert_eq!(status, StatusCode::OK);
 
-        // 白名单必须取全部登记来源: 取启用集的话, 这里会被判成未知来源.
+        // 白名单必须取全部登记来源: 取当前链的话, 这里会被判成未知来源.
         let mut restored = current.clone();
-        restored["hot"]["enabled_sources"] = serde_json::json!(["javdb", "dmm"]);
+        restored["hot"]["content_routes"]["censored"] = serde_json::json!(["dmm", "javdb"]);
         let text = serde_json::to_string(&restored).expect("配置应可序列化");
         let (status, body) = call(app.clone(), Method::PUT, "/api/config", Some(&text)).await;
-        assert_eq!(status, StatusCode::OK, "停用后应能重新启用, 实际 {body}");
-
-        let (_, options) = call(app.clone(), Method::GET, "/api/filters", None).await;
-        let ids: Vec<&str> = options["sources"]
-            .as_array()
-            .expect("来源应为数组")
-            .iter()
-            .filter_map(|item| item["id"].as_str())
-            .collect();
-        assert_eq!(ids, ["javdb", "dmm"], "顺序即聚合优先级");
+        assert_eq!(status, StatusCode::OK, "移出链后应能重新加回, 实际 {body}");
     }
 
     #[tokio::test]
@@ -1094,7 +1086,7 @@ mod tests {
         );
 
         let mut unknown_source = current.clone();
-        unknown_source["hot"]["enabled_sources"] = serde_json::json!(["nowhere"]);
+        unknown_source["hot"]["content_routes"]["censored"] = serde_json::json!(["nowhere"]);
         let text = serde_json::to_string(&unknown_source).expect("配置应可序列化");
         let (status, body) = call(app.clone(), Method::PUT, "/api/config", Some(&text)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -1103,6 +1095,20 @@ mod tests {
                 .as_str()
                 .unwrap_or_default()
                 .contains("nowhere")
+        );
+
+        // 空链在保存时就拒绝: 留到运行时只会表现为「该类影片没有可用来源」.
+        let mut empty_chain = current.clone();
+        empty_chain["hot"]["content_routes"]["censored"] = serde_json::json!([]);
+        let text = serde_json::to_string(&empty_chain).expect("配置应可序列化");
+        let (status, body) = call(app.clone(), Method::PUT, "/api/config", Some(&text)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("有码"),
+            "应指出是哪一类, 实际 {body}"
         );
     }
 

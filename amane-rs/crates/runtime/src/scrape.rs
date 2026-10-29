@@ -9,7 +9,7 @@ use amane_core::{
 use async_trait::async_trait;
 use tracing::Instrument;
 
-use amane_crawlers::{Capability, Registry, ScrapedMetadata, SourceError, aggregate};
+use amane_crawlers::{Registry, ScrapedMetadata, SourceError, aggregate};
 
 /// 把刮削任务接到来源登记表上.
 ///
@@ -40,11 +40,25 @@ impl TaskHandler for ScrapeHandler {
 
         context.logger.info(format!("开始刮削 {number}")).await;
 
-        let candidates = self.sources.with_capability(Capability::Metadata);
+        // 只问当前类型链上的来源: 与类型不匹配的站点白跑一次请求, 还会拖慢整条链.
+        let candidates = self.sources.chain_for(number.content_type());
         if candidates.is_empty() {
-            context.logger.error("没有可用的来源").await;
-            return Err(TaskError::Failed("没有可用的来源".to_owned()));
+            let reason = format!("{} 没有可用的来源", number.content_type().label());
+            context.logger.error(&reason).await;
+            return Err(TaskError::Failed(reason));
         }
+        context
+            .logger
+            .info(format!(
+                "{} 的来源链: {}",
+                number.content_type().label(),
+                candidates
+                    .iter()
+                    .map(|source| source.descriptor().id)
+                    .collect::<Vec<_>>()
+                    .join(" → ")
+            ))
+            .await;
 
         // 并行请求: 单源失败不影响其它来源, 总耗时接近最慢来源.
         // 获取期间取消要立即生效: 等全部来源返回再检查, 取消会被拖到最后一个超时.
@@ -183,6 +197,8 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::ScrapeHandler;
+    use amane_core::ContentType;
+    use amane_core::config::ContentRoutes;
     use amane_crawlers::{
         Capability, RawBody, Registry, ScrapedMetadata, Source, SourceDescriptor, SourceError,
     };
@@ -263,12 +279,29 @@ mod tests {
     }
 
     async fn fixture(sources: Vec<Box<dyn Source>>) -> Fixture {
+        let chain: Vec<&'static str> = sources
+            .iter()
+            .map(|source| source.descriptor().id)
+            .collect();
+        fixture_with_chain(sources, &chain).await
+    }
+
+    /// 每类都挂调用方给定的链: 这些用例关心聚合, 不关心类型差异.
+    async fn fixture_with_chain(sources: Vec<Box<dyn Source>>, chain: &[&str]) -> Fixture {
         let dir = tempfile::tempdir().expect("应创建临时目录");
         let database = Database::open(&dir.path().join("amane.db"))
             .await
             .expect("应打开数据库");
         let metadata = MetadataRepository::new(database.clone());
-        let handler = ScrapeHandler::new(Arc::new(Registry::new(sources)), metadata.clone());
+        let registry = Registry::new(sources);
+        let ids: Vec<String> = chain.iter().map(|id| (*id).to_owned()).collect();
+        let routes = ContentType::ALL
+            .into_iter()
+            .fold(ContentRoutes::default(), |routes, kind| {
+                routes.with_chain(kind, ids.clone())
+            });
+        registry.apply_routes(&routes);
+        let handler = ScrapeHandler::new(Arc::new(registry), metadata.clone());
 
         Fixture {
             dir,
@@ -291,6 +324,65 @@ mod tests {
                 cancel: CancellationToken::new(),
             })
             .await
+    }
+
+    #[tokio::test]
+    async fn chain_order_decides_which_title_wins() {
+        let number = MediaNumber::parse("ABC-123").expect("应解析成功");
+
+        for (chain, expected) in [
+            (["first", "second"], "第一 ABC-123"),
+            (["second", "first"], "第二 ABC-123"),
+        ] {
+            let fixture = fixture_with_chain(
+                vec![
+                    source("first", Some("第一"), false),
+                    source("second", Some("第二"), false),
+                ],
+                &chain,
+            )
+            .await;
+
+            run(
+                &fixture.handler,
+                fixture.dir.path(),
+                TaskPayload::Scrape {
+                    number: "ABC-123".to_owned(),
+                },
+            )
+            .await
+            .expect("应完成");
+
+            let row = fixture
+                .metadata
+                .find(&number)
+                .await
+                .expect("应查询成功")
+                .expect("应写入番号条目");
+            assert_eq!(row.title.as_deref(), Some(expected), "链顺序 {chain:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_chain_fails_with_reason() {
+        let fixture = fixture_with_chain(vec![source("working", Some("命中"), false)], &[]).await;
+
+        let result = run(
+            &fixture.handler,
+            fixture.dir.path(),
+            TaskPayload::Scrape {
+                number: "ABC-123".to_owned(),
+            },
+        )
+        .await;
+
+        match result {
+            Err(TaskError::Failed(message)) => {
+                assert!(message.contains("有码"), "应指出是哪一类: {message}");
+                assert!(message.contains("没有可用的来源"), "应说明原因: {message}");
+            }
+            other => panic!("空链必须失败, 实际 {other:?}"),
+        }
     }
 
     #[tokio::test]

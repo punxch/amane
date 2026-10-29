@@ -13,10 +13,12 @@ pub use amane_core::ScrapedMetadata;
 pub use dmm::DmmSource;
 pub use javdb::JavdbSource;
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::RwLock;
 
-use amane_core::MediaNumber;
+use amane_core::config::ContentRoutes;
+use amane_core::{ContentType, MediaNumber};
 use amane_net::WebClient;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -99,16 +101,16 @@ pub trait Source: Send + Sync {
     async fn fetch(&self, number: &MediaNumber) -> Result<ScrapedMetadata, SourceError>;
 }
 
-/// 已登记的来源集合. 顺序即聚合优先级.
+/// 已登记的来源集合. 按内容类型持有来源链, 链上顺序即聚合优先级.
 #[derive(Default)]
 /// 来源登记表.
 ///
-/// 处理函数持有的是同一份 `Arc<Registry>`, 因此启用集与顺序都必须就地更新.
+/// 处理函数持有的是同一份 `Arc<Registry>`, 因此路由必须就地更新.
 pub struct Registry {
     /// 全部已登记的来源, 按内置顺序.
     all: Vec<Arc<dyn Source>>,
-    /// 当前参与聚合的来源, 顺序即聚合优先级.
-    active: RwLock<Vec<Arc<dyn Source>>>,
+    /// 每个内容类型的来源链; 未登记的类型为空.
+    routes: RwLock<BTreeMap<ContentType, Vec<Arc<dyn Source>>>>,
 }
 
 impl Registry {
@@ -117,10 +119,9 @@ impl Registry {
             .into_iter()
             .map(|source| Arc::from(source) as Arc<dyn Source>)
             .collect();
-        let active = all.clone();
         Self {
             all,
-            active: RwLock::new(active),
+            routes: RwLock::new(BTreeMap::new()),
         }
     }
 
@@ -132,9 +133,10 @@ impl Registry {
         ])
     }
 
-    /// 全部已登记的来源标识, 与当前启用集无关.
+    /// 全部已登记的来源标识, 与当前路由无关.
     ///
-    /// 配置校验取这里而不是 [`Registry::active`]: 停用一个来源后仍要允许把它重新启用.
+    /// 配置校验与筛选选项都取这里: 停用一个来源后仍要允许把它重新加回链中,
+    /// 也要允许按它筛选已经存在的旧条目.
     pub fn known_ids(&self) -> Vec<&'static str> {
         self.all
             .iter()
@@ -142,59 +144,53 @@ impl Registry {
             .collect()
     }
 
-    /// 当前参与聚合的来源.
-    pub fn active(&self) -> Vec<Arc<dyn Source>> {
-        self.active
+    /// 全部已登记的来源, 与当前路由无关.
+    pub fn all(&self) -> &[Arc<dyn Source>] {
+        &self.all
+    }
+
+    /// 某个内容类型的来源链, 顺序即聚合优先级.
+    pub fn chain_for(&self, content_type: ContentType) -> Vec<Arc<dyn Source>> {
+        self.routes
             .read()
             .unwrap_or_else(|error| error.into_inner())
-            .clone()
+            .get(&content_type)
+            .cloned()
+            .unwrap_or_default()
     }
 
-    pub fn len(&self) -> usize {
-        self.active().len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// 设置启用集与顺序.
+    /// 设置每类影片的来源链.
     ///
-    /// 空列表表示全部启用, 按内置顺序; 非空列表的取值即参与聚合的来源,
-    /// 列表顺序就是聚合优先级, 未列出的来源不参与.
-    pub fn apply_enabled_order(&self, order: &[String]) {
-        let next = if order.is_empty() {
-            self.all.clone()
-        } else {
-            order
-                .iter()
-                .filter_map(|id| {
-                    self.all
-                        .iter()
-                        .find(|source| source.descriptor().id == id.as_str())
-                        .cloned()
-                })
-                .collect()
-        };
+    /// 链上未登记的标识直接跳过: 配置文件可能来自有更多来源的版本.
+    pub fn apply_routes(&self, routes: &ContentRoutes) {
+        let next: BTreeMap<ContentType, Vec<Arc<dyn Source>>> = routes
+            .entries()
+            .map(|(content_type, chain)| {
+                let sources = chain
+                    .iter()
+                    .filter_map(|id| {
+                        self.all
+                            .iter()
+                            .find(|source| source.descriptor().id == id.as_str())
+                            .cloned()
+                    })
+                    .collect();
+                (content_type, sources)
+            })
+            .collect();
+
         *self
-            .active
+            .routes
             .write()
             .unwrap_or_else(|error| error.into_inner()) = next;
-    }
-
-    /// 按声明能力筛选来源.
-    pub fn with_capability(&self, capability: Capability) -> Vec<Arc<dyn Source>> {
-        self.active()
-            .into_iter()
-            .filter(move |source| source.descriptor().capabilities.contains(&capability))
-            .collect()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{Capability, Registry, ScrapedMetadata, Source, SourceDescriptor};
-    use amane_core::MediaNumber;
+    use amane_core::config::ContentRoutes;
+    use amane_core::{ContentType, MediaNumber};
     use async_trait::async_trait;
 
     struct StubSource {
@@ -231,73 +227,79 @@ mod tests {
         })
     }
 
-    #[test]
-    fn filters_sources_by_capability() {
-        let registry = Registry::new(vec![
-            stub("with-search", &[Capability::Metadata, Capability::Search]),
-            stub("metadata-only", &[Capability::Metadata]),
-        ]);
+    /// 只关心某一类的链, 其余类型用默认值即可.
+    fn routes_for(chain: &[&str]) -> ContentRoutes {
+        let body = serde_json::json!({ "censored": chain }).to_string();
+        serde_json::from_str(&body).expect("应解析成功")
+    }
 
-        let ids: Vec<&str> = registry
-            .with_capability(Capability::Search)
+    fn chain_ids(registry: &Registry, content_type: ContentType) -> Vec<&'static str> {
+        registry
+            .chain_for(content_type)
             .iter()
             .map(|source| source.descriptor().id)
-            .collect();
-
-        assert_eq!(ids, ["with-search"]);
-        assert_eq!(registry.len(), 2);
-        assert!(!registry.is_empty());
+            .collect()
     }
 
     #[test]
-    fn reorder_follows_configured_priority() {
+    fn chain_order_follows_configuration() {
         let registry = Registry::new(vec![
             stub("first", &[Capability::Metadata]),
             stub("second", &[Capability::Metadata]),
         ]);
 
-        registry.apply_enabled_order(&["second".to_owned(), "first".to_owned()]);
+        registry.apply_routes(&routes_for(&["second", "first"]));
 
-        let ids: Vec<&str> = registry
-            .active()
-            .iter()
-            .map(|source| source.descriptor().id)
-            .collect();
-        assert_eq!(ids, ["second", "first"], "配置的顺序应决定聚合优先级");
+        assert_eq!(
+            chain_ids(&registry, ContentType::Censored),
+            ["second", "first"],
+            "链上的顺序即聚合优先级"
+        );
     }
 
     #[test]
-    fn empty_order_enables_every_source() {
+    fn source_outside_the_chain_is_not_returned() {
         let registry = Registry::new(vec![
             stub("first", &[Capability::Metadata]),
             stub("second", &[Capability::Metadata]),
         ]);
 
-        registry.apply_enabled_order(&[]);
+        registry.apply_routes(&routes_for(&["second"]));
 
-        let ids: Vec<&str> = registry
-            .active()
-            .iter()
-            .map(|source| source.descriptor().id)
-            .collect();
-        assert_eq!(ids, ["first", "second"]);
+        assert_eq!(
+            chain_ids(&registry, ContentType::Censored),
+            ["second"],
+            "不在链上的来源不参与"
+        );
     }
 
     #[test]
-    fn unlisted_source_is_disabled() {
+    fn each_content_type_has_its_own_chain() {
         let registry = Registry::new(vec![
             stub("first", &[Capability::Metadata]),
             stub("second", &[Capability::Metadata]),
         ]);
 
-        registry.apply_enabled_order(&["second".to_owned()]);
+        registry.apply_routes(&routes_for(&["first"]));
 
-        let ids: Vec<&str> = registry
-            .active()
-            .iter()
-            .map(|source| source.descriptor().id)
-            .collect();
-        assert_eq!(ids, ["second"], "未列出的来源不参与聚合");
+        assert_eq!(chain_ids(&registry, ContentType::Censored), ["first"]);
+        assert!(
+            chain_ids(&registry, ContentType::Uncensored).is_empty(),
+            "默认链里的来源未登记时跳过, 不串到别的类型"
+        );
+    }
+
+    #[test]
+    fn unknown_id_in_chain_is_skipped() {
+        let registry = Registry::new(vec![stub("first", &[Capability::Metadata])]);
+
+        registry.apply_routes(&routes_for(&["nowhere", "first"]));
+
+        assert_eq!(
+            chain_ids(&registry, ContentType::Censored),
+            ["first"],
+            "未登记的标识跳过而不是整条链作废"
+        );
     }
 
     #[test]
@@ -311,11 +313,14 @@ mod tests {
         );
         let registry = Registry::builtin(client);
 
-        let ids: Vec<&str> = registry
-            .active()
-            .iter()
-            .map(|source| source.descriptor().id)
-            .collect();
-        assert_eq!(ids, ["dmm", "javdb"], "顺序即聚合优先级");
+        assert_eq!(
+            registry.known_ids(),
+            ["dmm", "javdb"],
+            "内置来源全部登记在册"
+        );
+        assert!(
+            registry.chain_for(ContentType::Censored).is_empty(),
+            "未应用路由前没有任何类型有链"
+        );
     }
 }
