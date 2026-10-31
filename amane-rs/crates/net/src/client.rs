@@ -324,6 +324,10 @@ fn build(timeout: Duration, profile: Fingerprint) -> Result<Client, NetError> {
     Client::builder()
         .emulation(profile.emulation())
         .timeout(timeout)
+        // 站点常把 `www` 跳到裸域、`http` 跳 `https`、给地址补斜杠; 不跟就全成了「请求失败 302」.
+        // 跳转后的主机不重新取令牌: 这些跳转是站点自己的入口整理, 与入口同源,
+        // 重新分桶反而给绕开限速留了口子.
+        .redirect(wreq::redirect::Policy::limited(5))
         .build()
         .map_err(|error| NetError::Build(error.to_string()))
 }
@@ -468,6 +472,58 @@ mod tests {
             other => panic!("全档位被拒时必须报 Rejected, 实际 {other:?}"),
         }
         server.abort();
+    }
+
+    /// 入口回 302, 落点回 200 的桩. 两个服务都要显式收尾.
+    async fn spawn_redirect_stub() -> (
+        String,
+        tokio::task::JoinHandle<()>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let target = TcpListener::bind("127.0.0.1:0").await.expect("应绑定端口");
+        let target_address = target.local_addr().expect("应取得地址");
+        let target_handle = tokio::spawn(async move {
+            while let Ok((mut socket, _)) = target.accept().await {
+                let mut buffer = [0_u8; 1024];
+                let _ = socket.read(&mut buffer).await;
+                let response =
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 10\r\nconnection: close\r\n\r\nredirected".to_string();
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("应绑定端口");
+        let address = listener.local_addr().expect("应取得地址");
+        let location = format!("http://{target_address}/");
+        let handle = tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buffer = [0_u8; 1024];
+                let _ = socket.read(&mut buffer).await;
+                let response = format!(
+                    "HTTP/1.1 302 Found\r\nlocation: {location}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+
+        (format!("http://{address}/"), target_handle, handle)
+    }
+
+    #[tokio::test]
+    async fn follows_redirects() {
+        let (url, target, server) = spawn_redirect_stub().await;
+        let client = client_with(5, 20.0);
+
+        let body = client.get_text(&url).await.expect("跳转后应取到内容");
+
+        assert_eq!(body, "redirected");
+        server.abort();
+        target.abort();
     }
 
     #[tokio::test]
