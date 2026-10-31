@@ -43,9 +43,16 @@ const segments = computed<Segment[]>(() => {
 
 <template>
   <template v-for="(part, index) in segments" :key="index">
-    <mark v-if="part.hit" class="rounded bg-emerald-500/20 px-0.5 text-emerald-300">{{
-      part.text
-    }}</mark>
+    <mark v-if="part.hit" class="hit">{{ part.text }}</mark>
     <template v-else>{{ part.text }}</template>
   </template>
 </template>
+
+<style scoped>
+.hit {
+  padding: 0 1px;
+  border-radius: 2px;
+  background: var(--amane-brand-soft);
+  color: var(--amane-brand-text);
+}
+</style>

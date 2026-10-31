@@ -1,17 +1,208 @@
+/*
+  主题令牌: 取值与原项目 `web/src/theme.ts` 及 Mantine 默认色板一致, 页面不直接写颜色.
+  深浅两套由 `data-theme` 切换, 值语义对齐 Mantine 的 dark / gray 色阶与 brand 主色.
+*/
 @import "tailwindcss";
 
-@theme {
+:root {
+  /* 视口高度: 支持 dvh 的引擎由 `main.ts` 换成 100dvh. */
+  --amane-vh: 100vh;
+
+  --amane-brand-0: #e8f3ff;
+  --amane-brand-1: #d0e4ff;
+  --amane-brand-2: #a1c6ff;
+  --amane-brand-3: #6ea6ff;
+  --amane-brand-4: #458bfe;
+  --amane-brand-5: #2b7afe;
+  --amane-brand-6: #1a71ff;
+  --amane-brand-7: #0060e4;
+  --amane-brand-8: #0055cc;
+  --amane-brand-9: #0049b4;
+
+  --amane-teal: #12b886;
+  --amane-yellow: #fab005;
+  --amane-red: #fa5252;
+
+  --amane-header-height: 60px;
+  --amane-navbar-width: 260px;
+  --amane-radius: 8px;
+  --amane-shadow: 0 4px 14px rgb(0 0 0 / 24%);
+}
+
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --amane-body: #1a1b1e;
+  --amane-surface: #25262b;
+  --amane-surface-2: #2c2e33;
+  --amane-hover: #2c2e33;
+  --amane-line: #373a40;
+  --amane-line-soft: #2c2e33;
+  --amane-fg: #c1c2c5;
+  --amane-bright: #f1f3f5;
+  --amane-dimmed: #909296;
+  --amane-subtle: #5c5f66;
+  --amane-overlay: rgb(12 13 15 / 70%);
+  --amane-brand: var(--amane-brand-6);
+  --amane-brand-hover: var(--amane-brand-7);
+  --amane-brand-text: var(--amane-brand-4);
+  --amane-brand-soft: rgb(26 113 255 / 16%);
+  --amane-error-soft: rgb(250 82 82 / 14%);
+  --amane-success-soft: rgb(18 184 134 / 14%);
+  --amane-warning-soft: rgb(250 176 5 / 14%);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --amane-body: #ffffff;
+  --amane-surface: #f8f9fa;
+  --amane-surface-2: #f1f3f5;
+  --amane-hover: #f1f3f5;
+  --amane-line: #dee2e6;
+  --amane-line-soft: #e9ecef;
+  --amane-fg: #212529;
+  --amane-bright: #101113;
+  --amane-dimmed: #868e96;
+  --amane-subtle: #adb5bd;
+  --amane-overlay: rgb(0 0 0 / 45%);
+  --amane-brand-text: var(--amane-brand-7);
+  --amane-brand-soft: rgb(26 113 255 / 10%);
+  --amane-error-soft: rgb(250 82 82 / 10%);
+  --amane-success-soft: rgb(18 184 134 / 10%);
+  --amane-warning-soft: rgb(250 176 5 / 12%);
+}
+
+@theme inline {
   --font-sans:
-    ui-sans-serif, system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
-  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", monospace;
+    "IBM Plex Sans", "Noto Sans SC", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "IBM Plex Mono", "JetBrains Mono", ui-monospace, monospace;
+
+  /* 断点取 Mantine 的 sm / md / lg, 与原项目同一批布局切换点. */
+  --breakpoint-sm: 48em;
+  --breakpoint-md: 62em;
+  --breakpoint-lg: 75em;
+
+  --color-body: var(--amane-body);
+  --color-surface: var(--amane-surface);
+  --color-surface-2: var(--amane-surface-2);
+  --color-hover: var(--amane-hover);
+  --color-line: var(--amane-line);
+  --color-line-soft: var(--amane-line-soft);
+  --color-fg: var(--amane-fg);
+  --color-bright: var(--amane-bright);
+  --color-dimmed: var(--amane-dimmed);
+  --color-subtle: var(--amane-subtle);
+  --color-brand: var(--amane-brand);
+  --color-brand-hover: var(--amane-brand-hover);
+  --color-brand-soft: var(--amane-brand-soft);
+  --color-danger: var(--amane-red);
+  --color-warning: var(--amane-yellow);
+  --color-success: var(--amane-teal);
 }
 
-html,
-body,
-#app {
-  height: 100%;
+@layer base {
+  html,
+  body,
+  #app {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--amane-body);
+    color: var(--amane-fg);
+    font-family: var(--font-sans);
+    font-size: 16px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    margin: 0;
+    color: var(--amane-bright);
+    font-weight: 600;
+    line-height: 1.4;
+  }
+
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  button {
+    font: inherit;
+    color: inherit;
+  }
+
+  ::selection {
+    background: var(--amane-brand-soft);
+  }
+
+  /* 滚动条按 Mantine 的细条样式; Firefox 走标准属性. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--amane-line) transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background: var(--amane-line);
+    border-radius: 8px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
 }
 
-body {
-  @apply bg-neutral-950 text-neutral-200 antialiased;
+@layer components {
+  /*
+    表格: Mantine Table 的形态 — 表头小字下沉, 行间细线, 悬浮高亮.
+    页面用自己的 `<table class="amane-table">`, 列宽由各页决定.
+  */
+  .amane-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+  }
+
+  .amane-table thead th {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--amane-line);
+    color: var(--amane-dimmed);
+    font-size: 12px;
+    font-weight: 600;
+    text-align: left;
+    white-space: nowrap;
+  }
+
+  .amane-table tbody td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--amane-line-soft);
+    vertical-align: middle;
+  }
+
+  .amane-table tbody tr:last-child td {
+    border-bottom: 0;
+  }
+
+  .amane-table tbody tr[data-clickable="true"] {
+    cursor: pointer;
+  }
+
+  .amane-table tbody tr[data-clickable="true"]:hover {
+    background: var(--amane-hover);
+  }
+
+  .amane-table tbody tr[data-selected="true"] {
+    background: var(--amane-brand-soft);
+  }
 }

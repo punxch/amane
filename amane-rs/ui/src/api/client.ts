@@ -266,6 +266,8 @@ export const api = {
     return request("/api/tasks", undefined, query);
   },
 
+  task: (id: number): Promise<TaskDto> => request(fill("/api/tasks/{id}", { id })),
+
   createTask: (payload: CreateTaskRequest): Promise<TaskDto> =>
     request("/api/tasks", { method: "POST", body: JSON.stringify(payload) }),
 
@@ -312,10 +314,21 @@ export const api = {
   scanLibrary: (id: number): Promise<TaskDto> =>
     request(fill("/api/libraries/{id}/scan", { id }), { method: "POST" }),
 
-  libraryFiles: (id: number, kind: string | null): Promise<LibraryFilePage> => {
+  libraryFiles: (
+    id: number,
+    kind: string | null,
+    limit?: number,
+    offset?: number,
+  ): Promise<LibraryFilePage> => {
     const query = new URLSearchParams();
     if (kind !== null) {
       query.set("kind", kind);
+    }
+    if (limit !== undefined) {
+      query.set("limit", String(limit));
+    }
+    if (offset !== undefined) {
+      query.set("offset", String(offset));
     }
     return request(fill("/api/libraries/{id}/files", { id }), undefined, query);
   },

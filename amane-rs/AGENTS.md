@@ -22,7 +22,7 @@ Amane 的 Rust 实现, 逐步替代 `src/amane/` 的 Python 实现. 覆盖范围
 | `crates/runtime/` | 任务处理函数: 把来源与持久化接起来. 跨 crate 的编排放这里 |
 | `crates/desktop/` | Tauri 外壳: 启动内嵌服务, 分配端口与令牌 |
 | `crates/server/` | axum 适配: 路由、DTO、错误映射、OpenAPI |
-| `ui/` | Vue 3 前端. 只经 HTTP 契约访问后端 |
+| `ui/` | Vue 3 前端. 外观与结构沿用 `web/`, 只经 HTTP 契约访问后端 |
 | `migrations/` | sqlx 迁移 |
 
 `crates/desktop/` 是 Tauri 外壳, 构建命令见 [docs/dev/build.md](docs/dev/build.md).

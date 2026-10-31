@@ -1,16 +1,20 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref } from "vue";
 
 import {
   ApiError,
-  describeError,
   api,
+  describeError,
   type ConfigState,
   type HotSettingsDto,
   type SettingsDto,
   type UpdateConfigRequest,
 } from "@/api/client";
+import PageShell from "@/components/common/PageShell.vue";
+import Alert from "@/components/ui/Alert.vue";
 import Button from "@/components/ui/Button.vue";
+import Paper from "@/components/ui/Paper.vue";
+import TextInput from "@/components/ui/TextInput.vue";
 
 interface FieldSchema {
   type?: string;
@@ -28,19 +32,30 @@ interface SectionSchema {
 }
 
 const loading = ref(false);
+const saving = ref(false);
 const failure = ref<string | null>(null);
 const notice = ref<{ kind: "error" | "ok"; text: string } | null>(null);
 const applied = ref<string[]>([]);
 const restartRequired = ref<string[]>([]);
+const dirty = ref(false);
 
 const schema = ref<Record<string, SectionSchema>>({});
 /** 内容类型与其展示名; 由筛选选项接口给出, 界面不自行维护枚举. */
 const contentTypes = ref<Array<{ value: string; label: string }>>([]);
 /** 最近一次读到的配置; 提交时作为基底, 表单没渲染的字段原样带回. */
 const loaded = ref<SettingsDto | null>(null);
+/** 类型路由单独存放: 它是已知形状的对象, 放在 `unknown` 的表单里会逼出断言. */
+const routes = ref<Record<string, string[]>>({});
 const form = reactive<{ cold: Record<string, string>; hot: Record<string, unknown> }>({
   cold: {},
   hot: {},
+});
+
+const subtitle = computed(() => {
+  if (loading.value) {
+    return "读取中";
+  }
+  return dirty.value ? "有未保存的更改" : "热配置立即生效，冷配置需要重启";
 });
 
 function report(kind: "error" | "ok", text: string): void {
@@ -54,8 +69,8 @@ function widgetOf(spec: FieldSchema): string {
 /**
  * 取某一层的可编辑字段.
  *
- * 只列有控件的标量: 嵌套对象 (扫描规则、整理规则) 由各自的页面维护, 在这里渲染成
- * 一个没有控件的标签只会让人以为它能改. 新增配置项只需要改后端 schema.
+ * 只列有控件的标量: 嵌套对象 (扫描规则、整理规则) 由各自的页面维护, 在这里渲染成一个没有控件的标签
+ * 只会让人以为它能改. 新增配置项只需要改后端 schema.
  */
 function fields(layer: "HotSettings" | "ColdSettings"): [string, FieldSchema][] {
   const section = schema.value[layer] ?? {};
@@ -85,6 +100,7 @@ function parseList(text: string): string[] {
 }
 
 function writeHot(field: string, widget: string, raw: string): void {
+  dirty.value = true;
   if (widget === "list") {
     form.hot[field] = parseList(raw);
     return;
@@ -93,16 +109,14 @@ function writeHot(field: string, widget: string, raw: string): void {
 }
 
 function writeCold(field: string, raw: string): void {
+  dirty.value = true;
   form.cold[field] = raw;
 }
 
-/**
- * 取输入框的值.
- *
- * 断言必要性: 事件只挂在校验过的 `input` 元素上, 但 DOM 事件目标的类型无法静态收窄.
- */
+/** 取值经事件目标收窄, 而不是把 DOM 事件断言成 Input 元素. */
 function inputValue(event: Event): string {
-  return (event.target as HTMLInputElement).value;
+  const target = event.target;
+  return target instanceof HTMLInputElement ? target.value : "";
 }
 
 function numberAt(field: string): number {
@@ -112,13 +126,12 @@ function numberAt(field: string): number {
 
 /** 某一类型的来源链在表单里是逗号分隔的文本. */
 function chainText(contentType: string): string {
-  const routes = form.hot.content_routes as Record<string, string[]> | undefined;
-  return (routes?.[contentType] ?? []).join(", ");
+  return (routes.value[contentType] ?? []).join(", ");
 }
 
 function writeChain(contentType: string, raw: string): void {
-  const routes = (form.hot.content_routes ?? {}) as Record<string, string[]>;
-  form.hot.content_routes = { ...routes, [contentType]: parseList(raw) };
+  dirty.value = true;
+  routes.value = { ...routes.value, [contentType]: parseList(raw) };
 }
 
 function buildPayload(): UpdateConfigRequest {
@@ -132,8 +145,7 @@ function buildPayload(): UpdateConfigRequest {
     ...base.hot,
     concurrency: numberAt("concurrency"),
     request_timeout_secs: numberAt("request_timeout_secs"),
-    content_routes: (form.hot.content_routes ??
-      base.hot.content_routes) as Record<string, string[]>,
+    content_routes: routes.value,
   };
   const token = (form.cold.api_token ?? "").trim();
 
@@ -167,6 +179,8 @@ async function load(): Promise<void> {
       api_token: state.cold.api_token ?? "",
     };
     form.hot = { ...state.hot };
+    routes.value = state.hot.content_routes;
+    dirty.value = false;
   } catch (error) {
     failure.value = describeError(error);
   } finally {
@@ -177,16 +191,14 @@ async function load(): Promise<void> {
 async function submit(): Promise<void> {
   applied.value = [];
   restartRequired.value = [];
+  saving.value = true;
   try {
     const state: ConfigState = await api.saveConfig(buildPayload());
 
     applied.value = state.applied;
     restartRequired.value = state.restart_required;
     if (restartRequired.value.length > 0) {
-      report(
-        "ok",
-        `以下修改需要重启进程后生效: ${restartRequired.value.join("、")}`,
-      );
+      report("ok", `以下修改需要重启进程后生效: ${restartRequired.value.join("、")}`);
     } else if (applied.value.length > 0) {
       report("ok", `已生效: ${applied.value.join("、")}`);
     } else {
@@ -201,8 +213,12 @@ async function submit(): Promise<void> {
       api_token: state.settings.cold.api_token ?? "",
     };
     form.hot = { ...state.settings.hot };
+    routes.value = state.settings.hot.content_routes;
+    dirty.value = false;
   } catch (error) {
     report("error", describeError(error));
+  } finally {
+    saving.value = false;
   }
 }
 
@@ -217,127 +233,229 @@ onMounted(load);
 </script>
 
 <template>
-  <div>
-    <div class="flex items-center justify-between px-8 pt-5">
-      <span class="font-mono text-xs text-neutral-500">
-        {{ loading ? "读取中" : "配置" }}
-      </span>
-      <div class="flex gap-2">
-        <Button variant="ghost" :disabled="loading" @click="reset">重置</Button>
-        <Button :disabled="loading" @click="submit">保存</Button>
-      </div>
-    </div>
+  <PageShell title="设置" :subtitle="subtitle">
+    <template #actions>
+      <Button variant="default" :disabled="loading" @click="reset">重置</Button>
+      <Button :loading="saving" :disabled="loading" @click="submit">保存</Button>
+    </template>
 
-    <p
-      v-if="notice"
-      :class="[
-        'mx-8 mt-4 rounded-md border px-4 py-2 text-sm',
-        notice.kind === 'error'
-          ? 'border-red-900/60 bg-red-950/40 text-red-300'
-          : 'border-emerald-900/60 bg-emerald-950/40 text-emerald-300',
-      ]"
-    >
+    <Alert v-if="notice !== null" :tone="notice.kind === 'error' ? 'danger' : 'success'">
       {{ notice.text }}
-    </p>
+    </Alert>
 
-    <p v-if="failure" class="mx-8 mt-4 rounded-md border border-red-900/60 bg-red-950/40 px-4 py-2 text-sm text-red-300">
+    <Alert v-if="failure !== null" tone="danger">
       {{ failure }}
-      <Button class="ml-3" variant="ghost" @click="load">重试</Button>
-    </p>
+      <template #action>
+        <Button variant="subtle" size="sm" @click="load">重试</Button>
+      </template>
+    </Alert>
 
-    <main class="grid items-start gap-6 px-8 py-6 lg:grid-cols-2">
-      <section class="rounded-lg border border-neutral-800/80 p-5">
-        <h2 class="text-sm font-medium text-neutral-200">热配置</h2>
-        <p class="mt-1 text-xs text-neutral-500">保存后立即生效，正在运行的任务不受影响。</p>
+    <div class="settings">
+      <Paper class="settings__section">
+        <h2 class="settings__title">热配置</h2>
+        <p class="settings__hint">保存后立即生效，正在运行的任务不受影响。</p>
 
-        <div v-for="[field, spec] in fields('HotSettings')" :key="field" class="mt-4">
-          <label class="block text-xs text-neutral-500">
+        <div v-for="[field, spec] in fields('HotSettings')" :key="field" class="field">
+          <label class="field__label" :for="`hot-${field}`">
             {{ label(field, spec) }}
-            <span class="ml-1 font-mono text-neutral-700">{{ field }}</span>
-            <span v-if="spec.minimum !== undefined" class="ml-2 text-neutral-700">
+            <span class="field__key">{{ field }}</span>
+            <span v-if="spec.minimum !== undefined" class="field__range">
               {{ spec.minimum }}–{{ spec.maximum }}
             </span>
           </label>
 
           <input
             v-if="widgetOf(spec) === 'slider'"
+            :id="`hot-${field}`"
             :value="hotText(field)"
+            class="slider"
             type="range"
-            class="mt-2 w-full"
             :min="spec.minimum ?? 0"
             :max="spec.maximum ?? 100"
             @input="writeHot(field, 'slider', inputValue($event))"
           />
-          <input
-            v-else-if="widgetOf(spec) === 'number'"
-            :value="hotText(field)"
-            type="number"
-            class="mt-2 w-full rounded-md border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-100 outline-none focus:border-emerald-600"
-            :min="spec.minimum"
-            :max="spec.maximum"
-            @input="writeHot(field, 'number', inputValue($event))"
-          />
-          <input
-            v-else-if="widgetOf(spec) === 'list'"
-            :value="hotText(field)"
-            class="mt-2 w-full rounded-md border border-neutral-800 bg-neutral-900 px-3 py-1.5 font-mono text-sm text-neutral-100 outline-none focus:border-emerald-600"
-            placeholder="dmm, javdb"
-            @input="writeHot(field, 'list', inputValue($event))"
-          />
-          <input
+          <TextInput
             v-else
-            :value="hotText(field)"
-            type="text"
-            class="mt-2 w-full rounded-md border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-100 outline-none focus:border-emerald-600"
-            @input="writeHot(field, 'text', inputValue($event))"
+            :model-value="hotText(field)"
+            :type="widgetOf(spec) === 'number' ? 'number' : 'text'"
+            :mono="widgetOf(spec) === 'list'"
+            :aria-label="label(field, spec)"
+            @update:model-value="(value) => writeHot(field, widgetOf(spec), value)"
           />
 
-          <p v-if="widgetOf(spec) === 'slider'" class="mt-1 font-mono text-xs text-neutral-400">
-            {{ hotText(field) }}
-          </p>
-          <p v-if="widgetOf(spec) === 'list'" class="mt-1 text-xs text-neutral-600">
-            逗号分隔。
-          </p>
+          <p v-if="widgetOf(spec) === 'slider'" class="field__value">{{ hotText(field) }}</p>
+          <p v-if="widgetOf(spec) === 'list'" class="field__note">逗号分隔。</p>
         </div>
 
-        <div class="mt-6 border-t border-neutral-800/80 pt-5">
-          <h3 class="text-sm font-medium text-neutral-200">类型路由</h3>
-          <p class="mt-1 text-xs text-neutral-500">
+        <div class="settings__divider">
+          <h3 class="settings__subtitle">类型路由</h3>
+          <p class="settings__hint">
             每类影片按链上顺序询问来源，第一个给出值的来源决定该字段。链不能为空。
           </p>
 
-          <div v-for="option in contentTypes" :key="option.value" class="mt-3">
-            <label class="block text-xs text-neutral-500">
+          <div v-for="option in contentTypes" :key="option.value" class="field">
+            <label class="field__label" :for="`route-${option.value}`">
               {{ option.label }}
-              <span class="ml-1 font-mono text-neutral-700">{{ option.value }}</span>
+              <span class="field__key">{{ option.value }}</span>
             </label>
-            <input
-              :value="chainText(option.value)"
-              class="mt-1 w-full rounded-md border border-neutral-800 bg-neutral-900 px-3 py-1.5 font-mono text-sm text-neutral-100 outline-none focus:border-emerald-600"
+            <TextInput
+              :model-value="chainText(option.value)"
+              mono
               placeholder="dmm, javdb"
-              @input="writeChain(option.value, inputValue($event))"
+              :aria-label="option.label"
+              @update:model-value="(value) => writeChain(option.value, value)"
             />
           </div>
         </div>
-      </section>
+      </Paper>
 
-      <section class="rounded-lg border border-neutral-800/80 p-5">
-        <h2 class="text-sm font-medium text-neutral-200">冷配置</h2>
-        <p class="mt-1 text-xs text-neutral-500">保存后需要重启进程才能生效，界面会列出未生效的项。</p>
+      <Paper class="settings__section">
+        <h2 class="settings__title">冷配置</h2>
+        <p class="settings__hint">保存后需要重启进程才能生效，界面会列出未生效的项。</p>
 
-        <div v-for="[field, spec] in fields('ColdSettings')" :key="field" class="mt-4">
-          <label class="block text-xs text-neutral-500">
+        <div v-for="[field, spec] in fields('ColdSettings')" :key="field" class="field">
+          <label class="field__label" :for="`cold-${field}`">
             {{ label(field, spec) }}
-            <span class="ml-1 font-mono text-neutral-700">{{ field }}</span>
+            <span class="field__key">{{ field }}</span>
           </label>
-          <input
-            :value="form.cold[field] ?? ''"
-            type="text"
-            class="mt-2 w-full rounded-md border border-neutral-800 bg-neutral-900 px-3 py-1.5 font-mono text-sm text-neutral-100 outline-none focus:border-emerald-600"
-            @input="writeCold(field, inputValue($event))"
+          <TextInput
+            :model-value="form.cold[field] ?? ''"
+            mono
+            :aria-label="label(field, spec)"
+            @update:model-value="(value) => writeCold(field, value)"
           />
         </div>
-      </section>
-    </main>
-  </div>
+      </Paper>
+    </div>
+
+    <Transition name="save-bar">
+      <div v-if="dirty" class="save-bar">
+        <span>有未保存的更改</span>
+        <div class="save-bar__actions">
+          <Button variant="default" size="sm" :disabled="saving" @click="reset">放弃</Button>
+          <Button size="sm" :loading="saving" @click="submit">保存</Button>
+        </div>
+      </div>
+    </Transition>
+  </PageShell>
 </template>
+
+<style scoped>
+.settings {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+@media (min-width: 62em) {
+  .settings {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.settings__section {
+  min-width: 0;
+}
+
+.settings__title {
+  font-size: 15px;
+}
+
+.settings__subtitle {
+  margin: 0;
+  font-size: 14px;
+}
+
+.settings__hint {
+  margin: 4px 0 0;
+  color: var(--amane-dimmed);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.settings__divider {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--amane-line);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.field__label {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--amane-dimmed);
+  font-size: 12px;
+}
+
+.field__key {
+  color: var(--amane-subtle);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.field__range {
+  margin-left: auto;
+  color: var(--amane-subtle);
+  font-size: 11px;
+}
+
+.field__value {
+  margin: 0;
+  color: var(--amane-fg);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.field__note {
+  margin: 0;
+  color: var(--amane-subtle);
+  font-size: 12px;
+}
+
+.slider {
+  width: 100%;
+  accent-color: var(--amane-brand);
+}
+
+.save-bar {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--amane-line);
+  border-radius: var(--amane-radius);
+  background: var(--amane-surface-2);
+  color: var(--amane-fg);
+  font-size: 13px;
+}
+
+.save-bar__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.save-bar-enter-active,
+.save-bar-leave-active {
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+}
+
+.save-bar-enter-from,
+.save-bar-leave-to {
+  opacity: 0;
+  transform: translateY(6px);
+}
+</style>
