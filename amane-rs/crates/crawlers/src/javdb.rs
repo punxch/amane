@@ -3,12 +3,12 @@
 use std::sync::Arc;
 
 use amane_core::MediaNumber;
-use amane_net::{NetError, WebClient};
+use amane_net::WebClient;
 use async_trait::async_trait;
 use scraper::{Html, Selector};
 
 use crate::dom::{non_empty, parse_date, parse_minutes, text_of};
-use crate::{Capability, RawBody, ScrapedMetadata, Source, SourceDescriptor, SourceError};
+use crate::{Capability, ScrapedMetadata, Source, SourceDescriptor, SourceError};
 
 pub const HOST: &str = "javdb.com";
 
@@ -39,7 +39,7 @@ impl Source for JavdbSource {
             .client
             .get_text(&search_url)
             .await
-            .map_err(transport_error)?;
+            .map_err(|error| SourceError::transport(ID, &error))?;
         reject_blocked(&search)?;
 
         let path = first_result_path(&search, number)?;
@@ -48,7 +48,7 @@ impl Source for JavdbSource {
             .client
             .get_text(&detail_url)
             .await
-            .map_err(transport_error)?;
+            .map_err(|error| SourceError::transport(ID, &error))?;
         reject_blocked(&detail)?;
 
         parse_detail(&detail, number)
@@ -63,13 +63,6 @@ static DESCRIPTOR: SourceDescriptor = SourceDescriptor {
     rate: amane_net::Rate::each_second(1, 1),
     capabilities: &[Capability::Metadata],
 };
-
-fn transport_error(error: NetError) -> SourceError {
-    SourceError::Transport {
-        id: ID,
-        message: error.to_string(),
-    }
-}
 
 /// 地区封锁页的识别标记. 站点按出口 IP 拒绝时返回一个短页, 不是影片页也不是「暂无内容」.
 const BLOCK_MARKERS: &[&str] = &["prohibited in the country", "版權限制", "版权限制"];
@@ -118,18 +111,7 @@ fn first_result_path(html: &str, number: &MediaNumber) -> Result<String, SourceE
         });
     }
 
-    Err(parse_failure("搜索结果页没有结果列表", html))
-}
-
-fn parse_failure(message: &str, html: &str) -> SourceError {
-    SourceError::parse(
-        ID,
-        message.to_owned(),
-        RawBody {
-            content: html.to_owned(),
-            extension: "html",
-        },
-    )
+    Err(SourceError::unparsable(ID, "搜索结果页没有结果列表", html))
 }
 
 /// 详情页面板: 每个 `div.panel-block` 是「标签 + 值」.
@@ -162,7 +144,7 @@ fn parse_detail(html: &str, number: &MediaNumber) -> Result<ScrapedMetadata, Sou
     };
 
     if document.select(&block_selector).next().is_none() {
-        return Err(parse_failure("详情页没有信息面板", html));
+        return Err(SourceError::unparsable(ID, "详情页没有信息面板", html));
     }
 
     let mut matched_number = false;

@@ -5,12 +5,12 @@
 use std::sync::Arc;
 
 use amane_core::MediaNumber;
-use amane_net::{NetError, RequestOptions, WebClient};
+use amane_net::{RequestOptions, WebClient};
 use async_trait::async_trait;
 use scraper::{Html, Selector};
 
 use crate::dom::{absolute, attrs, find_date, first_text, texts};
-use crate::{Capability, RawBody, ScrapedMetadata, Source, SourceDescriptor, SourceError};
+use crate::{Capability, ScrapedMetadata, Source, SourceDescriptor, SourceError};
 
 /// 请求实际打到的主机名; 限速按它分桶.
 pub const HOST: &str = "adult.contents.fc2.com";
@@ -56,7 +56,7 @@ impl Source for Fc2Source {
             .client
             .get_text_with(&url, &options())
             .await
-            .map_err(transport_error)?;
+            .map_err(|error| SourceError::transport(ID, &error))?;
 
         parse_detail(&html, &article_id)
     }
@@ -77,24 +77,6 @@ static DESCRIPTOR: SourceDescriptor = SourceDescriptor {
 /// 拿不到可用的正文. 这是日文站, 就按日文取.
 fn options() -> RequestOptions {
     RequestOptions::new().header("accept-language", "ja-JP,ja;q=0.9")
-}
-
-fn transport_error(error: NetError) -> SourceError {
-    SourceError::Transport {
-        id: ID,
-        message: error.to_string(),
-    }
-}
-
-fn parse_failure(message: &str, html: &str) -> SourceError {
-    SourceError::parse(
-        ID,
-        message.to_owned(),
-        RawBody {
-            content: html.to_owned(),
-            extension: "html",
-        },
-    )
 }
 
 /// 番号里的数字商品 ID. 官方站写 `FC2-PPV-<id>`, 索引站多写 `FC2-<id>`; 两种都认.
@@ -119,7 +101,7 @@ fn parse_detail(html: &str, article_id: &str) -> Result<ScrapedMetadata, SourceE
                 number: format!("FC2-PPV-{article_id}"),
             });
         }
-        return Err(parse_failure("商品页没有用户信息块", html));
+        return Err(SourceError::unparsable(ID, "商品页没有用户信息块", html));
     }
 
     // 标题取主图 alt: 标题行里除标题外还有促销角标与站点插的隐藏水印, 只有 alt 是干净的.
@@ -127,7 +109,7 @@ fn parse_detail(html: &str, article_id: &str) -> Result<ScrapedMetadata, SourceE
         .into_iter()
         .next()
     else {
-        return Err(parse_failure("商品页没有标题", html));
+        return Err(SourceError::unparsable(ID, "商品页没有标题", html));
     };
 
     let samples = attrs(&document, "ul.items_article_SampleImagesArea li a", "href")

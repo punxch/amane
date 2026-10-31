@@ -1,10 +1,10 @@
-//! 片商官网. 按番号的系列前缀路由到制作商站点.
+//! 片商官网. 按番号的系列前缀路由到对应的片商站点.
 //!
 //! 这些站点共用同一套 CMS (Outvision / Will 集团), 详情页结构一致, 因此只有一个解析器;
 //! 差异只在域名与番号前缀, 两者都由表驱动.
 //!
-//! 路由只看番号的系列前缀: 按前序来源的片商名反查 (Python 的第三级回退) 需要聚合结果,
-//! 而 `Source::fetch` 只拿得到番号. 前缀表覆盖不到的新系列要靠后续补表.
+//! 路由只看番号的系列前缀: 按前序来源的片商名反查需要聚合结果, 而 `Source::fetch`
+//! 只拿得到番号. 前缀表覆盖不到的新系列要靠后续补表, 见 `docs/adr/0008`.
 
 use std::sync::Arc;
 
@@ -14,13 +14,13 @@ use async_trait::async_trait;
 use scraper::{CaseSensitivity, ElementRef, Html, Selector};
 
 use crate::dom::{absolute, attrs, find_date, own_text_of, parse_minutes, text_of};
-use crate::{Capability, RawBody, ScrapedMetadata, Source, SourceDescriptor, SourceError};
+use crate::{Capability, ScrapedMetadata, Source, SourceDescriptor, SourceError};
 
 const ID: &str = "official";
 
-/// 一个制作商与其官网.
+/// 一个片商与其官网.
 struct Manufacturer {
-    /// 来源内部的标识, 路由表用它指认制作商.
+    /// 来源内部的标识, 路由表用它指认片商.
     id: &'static str,
     domain: &'static str,
 }
@@ -363,37 +363,16 @@ const SERIES: &[(&str, &str)] = &[
     ("tysf", "hunter"),
 ];
 
-static HOSTS: [&str; 29] = [
-    "attackers.net",
-    "befreebe.com",
-    "bi-av.com",
-    "bibian-av.com",
-    "dasdas.jp",
-    "www.av-e-body.com",
-    "fitch-av.com",
-    "hajimekikaku.com",
-    "honnaka.jp",
-    "hhh-av.com",
-    "ideapocket.com",
-    "kawaiikawaii.jp",
-    "kirakira-av.com",
-    "www.madonna-av.com",
-    "miman.jp",
-    "mko-labo.net",
-    "moodyz.com",
-    "muku.tv",
-    "mvg.jp",
-    "nanpa-japan.jp",
-    "oppai-av.com",
-    "av-opera.jp",
-    "premium-beauty.com",
-    "rookie-av.jp",
-    "s1s1s1.com",
-    "tameikegoro.jp",
-    "to-satsu.com",
-    "v-av.com",
-    "www.wanz-factory.com",
-];
+/// 全部域名, 由片商表派生. 限速表按每台主机各建一个桶.
+const HOSTS: [&str; MANUFACTURERS.len()] = {
+    let mut hosts = [""; MANUFACTURERS.len()];
+    let mut index = 0;
+    while index < MANUFACTURERS.len() {
+        hosts[index] = MANUFACTURERS[index].domain;
+        index += 1;
+    }
+    hosts
+};
 
 pub struct OfficialSource {
     client: Arc<WebClient>,
@@ -429,7 +408,7 @@ impl Source for OfficialSource {
                     number: number.as_str().to_owned(),
                 });
             }
-            Err(error) => return Err(transport_error(error)),
+            Err(error) => return Err(SourceError::transport(ID, &error)),
         };
 
         parse_detail(&html, number, domain)
@@ -438,7 +417,8 @@ impl Source for OfficialSource {
 
 static DESCRIPTOR: SourceDescriptor = SourceDescriptor {
     id: ID,
-    label: "片商官网",
+    label: "制作商官网",
+    // 29 个域名没有共同入口, 因此没有单一首页可填.
     base_url: "",
     hosts: &HOSTS,
     rate: amane_net::Rate::each_second(1, 1),
@@ -448,24 +428,6 @@ static DESCRIPTOR: SourceDescriptor = SourceDescriptor {
 /// 站点要求的请求头: 语言头决定标签文字, 缺了会拿到英文页.
 fn options() -> RequestOptions {
     RequestOptions::new().header("accept-language", "ja-JP,ja;q=0.9")
-}
-
-fn transport_error(error: NetError) -> SourceError {
-    SourceError::Transport {
-        id: ID,
-        message: error.to_string(),
-    }
-}
-
-fn parse_failure(message: &str, html: &str) -> SourceError {
-    SourceError::parse(
-        ID,
-        message.to_owned(),
-        RawBody {
-            content: html.to_owned(),
-            extension: "html",
-        },
-    )
 }
 
 /// 番号 → 官网域名; 前缀表里没有时返回 `None`.
@@ -490,7 +452,7 @@ fn detail_url(domain: &str, number: &MediaNumber) -> String {
     )
 }
 
-/// 番号的系列前缀: 去掉分隔符与前导数字段, 取开头的字母段.
+/// 番号的系列前缀: 去掉分隔符与前导数字段, 保留开头的字母段.
 fn series_prefix(number: &str) -> String {
     let cleaned = number
         .trim_start_matches(|character: char| character.is_ascii_digit())
@@ -565,8 +527,9 @@ fn parse_detail(
     let document = Html::parse_document(html);
 
     // 站点对不存在的作品回 200 的「找不到页面」, 与改版页要分开.
+    // 标题里带 404 的是另一家的写法 (`404 | MOODYZ ...`), 因此只认段首.
     let title = crate::dom::first_text(&document, "title").unwrap_or_default();
-    if title.contains("見つかりません") || title.contains("404") {
+    if title.contains("見つかりません") || title.starts_with("404") {
         return Err(SourceError::NotFound {
             id: ID,
             number: number.as_str().to_owned(),
@@ -574,14 +537,17 @@ fn parse_detail(
     }
 
     let Some(found) = identifier(&document) else {
-        return Err(parse_failure("详情页没有作品信息表", html));
+        return Err(SourceError::unparsable(ID, "详情页没有作品信息表", html));
     };
     if normalize(&found) != normalize(number.as_str()) {
-        tracing::warn!(number = %number, found = %found, "片商官网的品番与请求不符");
-        return Err(SourceError::NotFound {
-            id: ID,
-            number: number.as_str().to_owned(),
-        });
+        // 页面读得出品番却不符, 说明读到的不是这部作品: 可能是地址改版把请求带到了别的页,
+        // 也可能是品番栏的结构变了. 两种情况都要原文才能定位, 因此按解析失败上报,
+        // 不能报未收录 —— 那会让人以为站点没有这部片.
+        return Err(SourceError::unparsable(
+            ID,
+            format!("品番与请求不符: 页面是 {found}, 请求是 {number}"),
+            html,
+        ));
     }
 
     let actors = field_cell(&document, "女優")
@@ -605,7 +571,7 @@ fn parse_detail(
         .as_deref()
         .and_then(parse_minutes);
 
-    // 官网只给横版封面, 没有竖版海报; 取作品轮播的首图.
+    // 官网只给横版封面, 没有竖版海报; 横版图以作品轮播的首图充当.
     let base = format!("https://{domain}");
     let thumb = attrs(&document, "div.p-slider img.swiper-lazy", "data-src")
         .into_iter()
@@ -780,13 +746,25 @@ mod tests {
     }
 
     #[test]
-    fn rejects_page_for_another_number() {
-        let result = parse_detail(DETAIL, &number("ABC-999"), "s1s1s1.com");
+    fn page_for_another_number_is_a_parse_failure() {
+        // 报未收录会让人以为站点没有这部片; 品番读得出来却不符, 要留着原文查地址与结构.
+        let error = parse_detail(DETAIL, &number("ABC-999"), "s1s1s1.com")
+            .expect_err("品番不符应判解析失败");
 
-        assert!(
-            matches!(result, Err(super::SourceError::NotFound { .. })),
-            "品番不符时必须报未收录"
-        );
+        match &error {
+            super::SourceError::Parse { message, raw, .. } => {
+                assert!(
+                    message.contains("SSIS001"),
+                    "说明应写出页面上的品番: {message}"
+                );
+                assert!(
+                    message.contains("ABC-999"),
+                    "说明应写出请求的番号: {message}"
+                );
+                assert_eq!(raw.content, DETAIL, "应保留完整原文");
+            }
+            other => panic!("应判解析失败, 实际 {other:?}"),
+        }
     }
 
     #[test]
@@ -797,7 +775,7 @@ mod tests {
                 "前缀 {series} 指向未登记的制作商 {maker}"
             );
         }
-        assert_eq!(super::MANUFACTURERS.len(), 29, "照 Python 的 29 家厂牌铺开");
+        assert_eq!(super::MANUFACTURERS.len(), 29, "29 家片商全部登记在册");
         assert_eq!(super::HOSTS.len(), 29, "限速表要覆盖每一家域名");
     }
 }

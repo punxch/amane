@@ -6,33 +6,31 @@
 use chrono::NaiveDate;
 use scraper::{ElementRef, Html, Node, Selector};
 
+/// 连续空白折叠成一个空格.
+fn squeeze(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// 元素的可见文本, 连续空白折叠成一个空格.
 pub fn text_of(element: &ElementRef<'_>) -> String {
-    element
-        .text()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    squeeze(&element.text().collect::<Vec<_>>().join(" "))
 }
 
 /// 元素自身的文本节点, 不含子元素的文本.
 ///
 /// 站点的「标签 + 值」常把标签放在子 `span` 里 (`<p><span>DVD</span>SSIS001</p>`),
-/// 取整段文本会把标签粘到值前面.
+/// 读取整段文本会把标签粘到值前面.
 pub fn own_text_of(element: &ElementRef<'_>) -> String {
-    element
+    let own = element
         .children()
         .filter_map(|node| match node.value() {
             Node::Text(text) => Some(text.text.to_string()),
             _ => None,
         })
         .collect::<Vec<_>>()
-        .join(" ")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+        .join(" ");
+
+    squeeze(&own)
 }
 
 /// 第一个匹配元素的可读文本; 空文本按没有处理.

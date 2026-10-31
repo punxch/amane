@@ -325,7 +325,7 @@ fn build(timeout: Duration, profile: Fingerprint) -> Result<Client, NetError> {
         .emulation(profile.emulation())
         .timeout(timeout)
         // 站点常把 `www` 跳到裸域、`http` 跳 `https`、给地址补斜杠; 不跟就全成了「请求失败 302」.
-        // 跳转后的主机不重新取令牌: 这些跳转是站点自己的入口整理, 与入口同源,
+        // 跳转后的主机不重新获取令牌: 这些跳转是站点自己的入口整理, 与入口同源,
         // 重新分桶反而给绕开限速留了口子.
         .redirect(wreq::redirect::Policy::limited(5))
         .build()
@@ -474,7 +474,7 @@ mod tests {
         server.abort();
     }
 
-    /// 入口回 302, 落点回 200 的桩. 两个服务都要显式收尾.
+    /// 入口回 302、目标回 200 的桩. 两个服务都要显式收尾.
     async fn spawn_redirect_stub() -> (
         String,
         tokio::task::JoinHandle<()>,

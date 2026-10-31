@@ -104,6 +104,28 @@ impl SourceError {
         Self::Parse { id, message, raw }
     }
 
+    /// 请求失败: 上游没有给出可用的响应.
+    pub fn transport(id: &'static str, error: &amane_net::NetError) -> Self {
+        Self::Transport {
+            id,
+            message: error.to_string(),
+        }
+    }
+
+    /// 页面结构读不懂, 连同原文一并返回.
+    ///
+    /// 站点实现都按同一形态留存 HTML, 各自抄一份 `parse_failure` 只会让扩展名分叉.
+    pub fn unparsable(id: &'static str, message: impl Into<String>, html: &str) -> Self {
+        Self::parse(
+            id,
+            message.into(),
+            RawBody {
+                content: html.to_owned(),
+                extension: "html",
+            },
+        )
+    }
+
     /// 需要留存的上游原文. 只有解析失败携带.
     pub fn raw(&self) -> Option<&RawBody> {
         match self {

@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use amane_core::MediaNumber;
-use amane_net::{NetError, WebClient};
+use amane_net::WebClient;
 use async_trait::async_trait;
 use chrono::NaiveDate;
 use serde_json::{Value, json};
@@ -100,7 +100,7 @@ impl Source for DmmSource {
             .client
             .post_text(ENDPOINT, &payload)
             .await
-            .map_err(transport_error)?;
+            .map_err(|error| SourceError::transport(ID, &error))?;
         let response = decode_body(&body)?;
 
         parse_digital(&response, number)
@@ -115,13 +115,6 @@ static DESCRIPTOR: SourceDescriptor = SourceDescriptor {
     rate: amane_net::Rate::each_second(2, 2),
     capabilities: &[Capability::Metadata],
 };
-
-fn transport_error(error: NetError) -> SourceError {
-    SourceError::Transport {
-        id: ID,
-        message: error.to_string(),
-    }
-}
 
 /// 解析响应体. 不是 JSON 时连同原文一起判解析失败: 维护页与拦截页走这条路径.
 fn decode_body(body: &str) -> Result<Value, SourceError> {

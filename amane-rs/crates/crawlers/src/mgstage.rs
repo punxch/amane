@@ -11,7 +11,7 @@ use scraper::{ElementRef, Html, Selector};
 
 use crate::dom::{absolute, attrs, find_date, first_text, parse_minutes, text_of};
 use crate::number::{select, variants};
-use crate::{Capability, RawBody, ScrapedMetadata, Source, SourceDescriptor, SourceError};
+use crate::{Capability, ScrapedMetadata, Source, SourceDescriptor, SourceError};
 
 /// 请求实际打到的主机名; 限速按它分桶.
 pub const HOST: &str = "www.mgstage.com";
@@ -63,7 +63,7 @@ impl MgstageSource {
         let html = match self.client.get_text_with(&search, &options()).await {
             Ok(html) => html,
             Err(NetError::Status { status: 404, .. }) => return Ok(None),
-            Err(error) => return Err(transport_error(error)),
+            Err(error) => return Err(SourceError::transport(ID, &error)),
         };
 
         Ok(result_path(&html, number))
@@ -88,7 +88,7 @@ impl Source for MgstageSource {
             .client
             .get_text_with(&url, &options())
             .await
-            .map_err(transport_error)?;
+            .map_err(|error| SourceError::transport(ID, &error))?;
 
         parse_detail(&html, number)
     }
@@ -106,24 +106,6 @@ static DESCRIPTOR: SourceDescriptor = SourceDescriptor {
 /// 站点要求的请求头: `adc=1` 即年龄确认, 不带它拿到的是确认页.
 fn options() -> RequestOptions {
     RequestOptions::new().cookie("adc=1")
-}
-
-fn transport_error(error: NetError) -> SourceError {
-    SourceError::Transport {
-        id: ID,
-        message: error.to_string(),
-    }
-}
-
-fn parse_failure(message: &str, html: &str) -> SourceError {
-    SourceError::parse(
-        ID,
-        message.to_owned(),
-        RawBody {
-            content: html.to_owned(),
-            extension: "html",
-        },
-    )
 }
 
 /// 检索结果里与请求番号同一部的地址.
@@ -203,11 +185,11 @@ fn parse_detail(html: &str, number: &MediaNumber) -> Result<ScrapedMetadata, Sou
     let document = Html::parse_document(html);
 
     let Some(title) = first_text(&document, "#center_column h1") else {
-        return Err(parse_failure("详情页没有标题", html));
+        return Err(SourceError::unparsable(ID, "详情页没有标题", html));
     };
     // 表格是这一家的全部字段来源; 连表格都没有说明拿到了确认页或改版页.
     let Some(identifier) = field_text(&document, "品番") else {
-        return Err(parse_failure("详情页没有商品信息表", html));
+        return Err(SourceError::unparsable(ID, "详情页没有商品信息表", html));
     };
     if !identifier
         .replace(' ', "")

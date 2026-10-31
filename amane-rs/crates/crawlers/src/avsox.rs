@@ -101,7 +101,7 @@ impl AvsoxSource {
             .client
             .get_text_with(&format!("{BASE_URL}/{LANG}/"), &RequestOptions::new())
             .await
-            .map_err(transport_error)?;
+            .map_err(|error| SourceError::transport(ID, &error))?;
 
         let token = csrf_token(&shell);
         if token.is_none() {

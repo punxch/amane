@@ -12,7 +12,7 @@ use scraper::{ElementRef, Html, Selector};
 
 use crate::dom::{absolute, attrs, find_date, first_text, parse_minutes, text_of, texts};
 use crate::number::{select, variants};
-use crate::{Capability, RawBody, ScrapedMetadata, Source, SourceDescriptor, SourceError};
+use crate::{Capability, ScrapedMetadata, Source, SourceDescriptor, SourceError};
 
 /// 请求实际打到的主机名; 限速按它分桶.
 pub const HOST: &str = "www.javbus.com";
@@ -65,7 +65,7 @@ impl JavbusSource {
             Ok(html) => html,
             // 检索词一条也匹配不上时站点直接 404; 报成请求失败会让人去查网络.
             Err(NetError::Status { status: 404, .. }) => return Ok(None),
-            Err(error) => return Err(transport_error(error)),
+            Err(error) => return Err(SourceError::transport(ID, &error)),
         };
 
         Ok(first_result_path(&html, number).map(|path| absolute(BASE_URL, &path)))
@@ -90,7 +90,7 @@ impl Source for JavbusSource {
             .client
             .get_text_with(&url, &options())
             .await
-            .map_err(transport_error)?;
+            .map_err(|error| SourceError::transport(ID, &error))?;
 
         parse_detail(&html, number)
     }
@@ -114,24 +114,6 @@ fn options() -> RequestOptions {
     RequestOptions::new().cookie("dv=1").header(
         "accept-language",
         "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
-    )
-}
-
-fn transport_error(error: NetError) -> SourceError {
-    SourceError::Transport {
-        id: ID,
-        message: error.to_string(),
-    }
-}
-
-fn parse_failure(message: &str, html: &str) -> SourceError {
-    SourceError::parse(
-        ID,
-        message.to_owned(),
-        RawBody {
-            content: html.to_owned(),
-            extension: "html",
-        },
     )
 }
 
@@ -205,10 +187,10 @@ fn parse_detail(html: &str, number: &MediaNumber) -> Result<ScrapedMetadata, Sou
     let document = Html::parse_document(html);
 
     let Some(title) = first_text(&document, "h3") else {
-        return Err(parse_failure("详情页没有标题", html));
+        return Err(SourceError::unparsable(ID, "详情页没有标题", html));
     };
     let Some(identifier) = labeled_value(&document, "識別碼") else {
-        return Err(parse_failure("详情页没有識別碼", html));
+        return Err(SourceError::unparsable(ID, "详情页没有識別碼", html));
     };
     if !identifier
         .replace(' ', "")
