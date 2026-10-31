@@ -13,6 +13,7 @@ pub mod javbus;
 pub mod javdb;
 pub mod mgstage;
 pub mod number;
+pub mod official;
 
 pub use aggregate::{Aggregated, aggregate};
 /// 来源返回的元数据由内核定义: 分站快照要按同一份结构落库.
@@ -24,6 +25,7 @@ pub use fc2::Fc2Source;
 pub use javbus::JavbusSource;
 pub use javdb::JavdbSource;
 pub use mgstage::MgstageSource;
+pub use official::OfficialSource;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -55,7 +57,9 @@ pub struct SourceDescriptor {
     pub label: &'static str,
     pub base_url: &'static str,
     /// 请求实际打到的主机名. 与 `base_url` 分开: 站点换域名时速率仍按同一台主机算.
-    pub host: &'static str,
+    ///
+    /// 是复数: 一个来源可能散在多家主机上 (片商官网各自有域名), 限速表按每台主机各建一个桶.
+    pub hosts: &'static [&'static str],
     /// 站点能承受的出站速率. 装配层据此建限速表, 配置可再按 host 覆盖.
     pub rate: Rate,
     pub capabilities: &'static [Capability],
@@ -149,7 +153,8 @@ impl Registry {
             Box::new(JavbusSource::new(Arc::clone(&client))),
             Box::new(MgstageSource::new(Arc::clone(&client))),
             Box::new(Fc2Source::new(Arc::clone(&client))),
-            Box::new(AvsoxSource::new(client)),
+            Box::new(AvsoxSource::new(Arc::clone(&client))),
+            Box::new(OfficialSource::new(client)),
         ])
     }
 
@@ -161,10 +166,12 @@ impl Registry {
         let mut rates: BTreeMap<&'static str, Rate> = BTreeMap::new();
         for source in &self.all {
             let descriptor = source.descriptor();
-            rates
-                .entry(descriptor.host)
-                .and_modify(|current| *current = current.slower(descriptor.rate))
-                .or_insert(descriptor.rate);
+            for host in descriptor.hosts {
+                rates
+                    .entry(host)
+                    .and_modify(|current| *current = current.slower(descriptor.rate))
+                    .or_insert(descriptor.rate);
+            }
         }
 
         let mut table: HashMap<String, Rate> = rates
@@ -279,7 +286,8 @@ mod tests {
                 id,
                 label: id,
                 base_url: "https://example.invalid",
-                host,
+                // 测试桩的 host 是运行期参数, 声明要求 'static, 泄漏一份换静态生命周期.
+                hosts: Box::leak(vec![host].into_boxed_slice()),
                 rate,
                 capabilities,
             },
@@ -375,7 +383,9 @@ mod tests {
 
         assert_eq!(
             registry.known_ids(),
-            ["dmm", "javdb", "javbus", "mgstage", "fc2", "avsox"],
+            [
+                "dmm", "javdb", "javbus", "mgstage", "fc2", "avsox", "official"
+            ],
             "内置来源全部登记在册"
         );
         assert!(

@@ -59,7 +59,7 @@ static DESCRIPTOR: SourceDescriptor = SourceDescriptor {
     id: ID,
     label: "JavDB",
     base_url: "https://javdb.com",
-    host: HOST,
+    hosts: &[HOST],
     rate: amane_net::Rate::each_second(1, 1),
     capabilities: &[Capability::Metadata],
 };

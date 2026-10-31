@@ -834,7 +834,9 @@ mod tests {
             .collect();
         assert_eq!(
             ids,
-            ["dmm", "javdb", "javbus", "mgstage", "fc2", "avsox"],
+            [
+                "dmm", "javdb", "javbus", "mgstage", "fc2", "avsox", "official"
+            ],
             "停用不等于从登记表里消失"
         );
     }
@@ -1180,7 +1182,12 @@ mod tests {
             .iter()
             .filter_map(|item| item["id"].as_str())
             .collect();
-        assert_eq!(ids, ["dmm", "javdb", "javbus", "mgstage", "fc2", "avsox"]);
+        assert_eq!(
+            ids,
+            [
+                "dmm", "javdb", "javbus", "mgstage", "fc2", "avsox", "official"
+            ]
+        );
     }
 
     #[tokio::test]

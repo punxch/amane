@@ -66,7 +66,7 @@ static DESCRIPTOR: SourceDescriptor = SourceDescriptor {
     id: ID,
     label: "FC2",
     base_url: BASE_URL,
-    host: HOST,
+    hosts: &[HOST],
     rate: amane_net::Rate::each_second(1, 1),
     capabilities: &[Capability::Metadata],
 };

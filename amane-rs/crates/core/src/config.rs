@@ -150,7 +150,10 @@ fn default_content_routes() -> BTreeMap<ContentType, Vec<String>> {
     let chain = |ids: &[&str]| ids.iter().map(|id| (*id).to_owned()).collect::<Vec<_>>();
 
     [
-        (ContentType::Censored, chain(&["dmm", "javdb", "javbus"])),
+        (
+            ContentType::Censored,
+            chain(&["dmm", "javdb", "javbus", "official"]),
+        ),
         (
             ContentType::Uncensored,
             chain(&["javdb", "javbus", "avsox"]),
@@ -385,7 +388,9 @@ mod tests {
     use crate::content_type::ContentType;
 
     /// 已实现的来源标识. 默认链与校验都按这一份走.
-    const KNOWN: &[&str] = &["dmm", "javdb", "javbus", "mgstage", "fc2", "avsox"];
+    const KNOWN: &[&str] = &[
+        "dmm", "javdb", "javbus", "mgstage", "fc2", "avsox", "official",
+    ];
 
     fn routes_with(content_type: ContentType, chain: &[&str]) -> ContentRoutes {
         let mut routes = ContentRoutes::default();

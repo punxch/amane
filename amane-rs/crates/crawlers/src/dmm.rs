@@ -111,7 +111,7 @@ static DESCRIPTOR: SourceDescriptor = SourceDescriptor {
     id: ID,
     label: "DMM",
     base_url: "https://api.video.dmm.co.jp/graphql",
-    host: HOST,
+    hosts: &[HOST],
     rate: amane_net::Rate::each_second(2, 2),
     capabilities: &[Capability::Metadata],
 };

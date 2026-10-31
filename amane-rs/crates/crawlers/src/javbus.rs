@@ -100,7 +100,7 @@ static DESCRIPTOR: SourceDescriptor = SourceDescriptor {
     id: ID,
     label: "JavBus",
     base_url: BASE_URL,
-    host: HOST,
+    hosts: &[HOST],
     // 站点没有公开的速率要求; 一次刮削只发两三个请求, 一秒一个足够慢.
     rate: amane_net::Rate::each_second(1, 1),
     capabilities: &[Capability::Metadata],
